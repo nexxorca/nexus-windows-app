@@ -12,15 +12,14 @@ public class NexusApiClient {
     private readonly LogService _log;
     private string _baseUrl = "";
 
-    private static readonly JsonSerializerOptions _jsonOptions = new() {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-    };
+    private static readonly JsonSerializerOptions _jsonOptions = new();
 
     public NexusApiClient( LogService log ) {
         _log = log;
         _http = new HttpClient {
-            Timeout = TimeSpan.FromSeconds(30)
+            Timeout = Timeout.InfiniteTimeSpan
         };
+        _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
 
     public void Configure( string baseUrl, string? authToken ) {
@@ -37,10 +36,22 @@ public class NexusApiClient {
             var json = JsonSerializer.Serialize(payload, _jsonOptions);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-            var response = await _http.PostAsync(url, content);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var response = await _http.PostAsync(url, content, cts.Token);
             var body = await response.Content.ReadAsStringAsync();
 
             if ( ! response.IsSuccessStatusCode ) {
+                if ( (int)response.StatusCode == 429 ) {
+                    var retryAfter = response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 60;
+                    _log.Write($"Login rate-limited: retry after {retryAfter}s");
+                    return ApiResult.Fail(429, $"Too many login attempts. Please wait {(int)retryAfter} seconds.");
+                }
+
+                if ( (int)response.StatusCode == 401 ) {
+                    _log.Write("Login failed: invalid credentials");
+                    return ApiResult.Fail(401, "Invalid email or password.");
+                }
+
                 _log.Write($"Login failed: {(int)response.StatusCode} - {body}");
                 return ApiResult.Fail((int)response.StatusCode, "Login failed", body);
             }
@@ -68,23 +79,26 @@ public class NexusApiClient {
         try {
             var url = _baseUrl + "/api/v1/transcripts";
 
-            var payload = new Dictionary<string, string?> {
+            var payload = new Dictionary<string, string> {
                 ["project_hash_id"] = projectHashId,
                 ["session_id"] = sessionId,
                 ["type"] = type,
-                ["content"] = content,
-                ["subagent_type"] = subagentType,
-                ["parent_transcript_id"] = parentTranscriptId
+                ["content"] = content
             };
 
-            var filtered = payload.Where(kv => kv.Value != null)
-                .ToDictionary(kv => kv.Key, kv => kv.Value);
+            if ( subagentType != null ) {
+                payload["subagent_type"] = subagentType;
+            }
 
-            var json = JsonSerializer.Serialize(filtered, _jsonOptions);
+            if ( parentTranscriptId != null ) {
+                payload["parent_transcript_id"] = parentTranscriptId;
+            }
+
+            var json = JsonSerializer.Serialize(payload, _jsonOptions);
             var httpContent = new StringContent(json, Encoding.UTF8, "application/json");
-            httpContent.Headers.Add("Accept", "application/json");
 
-            var response = await _http.PostAsync(url, httpContent);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            var response = await _http.PostAsync(url, httpContent, cts.Token);
             var body = await response.Content.ReadAsStringAsync();
 
             if ( ! response.IsSuccessStatusCode ) {
@@ -92,13 +106,51 @@ public class NexusApiClient {
                 return ApiResult.Fail((int)response.StatusCode, "Upload failed", body);
             }
 
-            return ApiResult.Ok();
+            return new ApiResult {
+                Success = true,
+                StatusCode = (int)response.StatusCode,
+                Message = body
+            };
         } catch ( TaskCanceledException ) {
             _log.Write($"Upload timed out [{sessionId}]");
             return ApiResult.Fail(0, "Request timed out");
         } catch ( HttpRequestException ex ) {
             _log.Write($"Upload connection error [{sessionId}]: {ex.Message}");
             return ApiResult.Fail(0, "Could not connect to server", ex.Message);
+        }
+    }
+
+    public async Task RevokeToken() {
+        try {
+            var url = _baseUrl + "/api/v1/auth/logout";
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await _http.PostAsync(url, null, cts.Token);
+        } catch {
+            // Fire-and-forget — if revoke fails (offline, expired), proceed with local logout
+        }
+    }
+
+    public async Task<(string Version, string DownloadUrl)?> CheckForUpdateAsync( string currentVersion ) {
+        try {
+            var url = _baseUrl + "/api/v1/app/latest-release";
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var response = await _http.GetAsync(url, cts.Token);
+
+            if ( ! response.IsSuccessStatusCode ) return null;
+
+            var body = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+
+            if ( ! root.TryGetProperty("version", out var versionEl) || versionEl.ValueKind == JsonValueKind.Null ) return null;
+
+            var latestVersion = versionEl.GetString();
+            if ( string.IsNullOrEmpty(latestVersion) || latestVersion == currentVersion ) return null;
+
+            var downloadUrl = root.GetProperty("download_url").GetString() ?? "";
+            return (latestVersion, downloadUrl);
+        } catch {
+            return null;
         }
     }
 }

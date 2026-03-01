@@ -44,6 +44,11 @@ public partial class LoginWindow : Window {
         var result = await _api.Login(url, email, password);
 
         if ( ! result.Success ) {
+            if ( result.IsRateLimited ) {
+                ShowError(result.Message ?? "Too many login attempts. Please wait before trying again.");
+                return;
+            }
+
             var msg = result.IsAuthError
                 ? "Invalid email or password."
                 : result.Message ?? "Login failed. Check your connection.";

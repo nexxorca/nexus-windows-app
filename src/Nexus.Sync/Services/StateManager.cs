@@ -14,7 +14,7 @@ public class StateManager {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    public StateManager(LogService log) {
+    public StateManager( LogService log ) {
         _log = log;
         _statePath = Path.Combine(AppConfig.ConfigDir, "sync-state.json");
         _state = Load();
@@ -28,7 +28,16 @@ public class StateManager {
     public void MarkUploaded(string filePath, long size) {
         _state.Files[filePath] = new FileState {
             Size = size,
-            Timestamp = DateTime.Now.ToString("o")
+            Timestamp = DateTime.Now.ToString("o"),
+            Status = "uploaded"
+        };
+    }
+
+    public void MarkIgnored(string filePath, long size) {
+        _state.Files[filePath] = new FileState {
+            Size = size,
+            Timestamp = DateTime.Now.ToString("o"),
+            Status = "ignored"
         };
     }
 
@@ -36,7 +45,7 @@ public class StateManager {
         try {
             var json = JsonSerializer.Serialize(_state, _jsonOptions);
             File.WriteAllText(_statePath, json);
-        } catch (Exception ex) {
+        } catch ( Exception ex ) {
             _log.Error("Failed to save sync state", ex);
         }
     }

@@ -95,8 +95,7 @@ Settings stored in `%APPDATA%\Nexus\config.json`:
   "authToken": "1|abc123def456...",
   "userHashId": "a1b2c3d4e5",
   "userName": "Erik",
-  "syncIntervalSeconds": 60,
-  "lookbackMinutes": 10
+  "syncIntervalSeconds": 60
 }
 ```
 
@@ -592,6 +591,169 @@ $userId = $request->user()->id;
 | `routes/api.php` | Add login route, change transcript middleware to `auth:sanctum` |
 | `app/Http/Requests/Api/V1/StoreTranscriptRequest.php` | Remove `user_id`, bump content to 30MB |
 | `app/Http/Controllers/Api/V1/TranscriptController.php` | Use `$request->user()->id` |
+
+---
+
+## Phase A.7: Sync Processing Fixes
+
+**Goal**: Fix critical processing bugs found post-launch. All transcript files get processed reliably regardless of age, with clear logging.
+
+**Context**: Phase A deployed with bugs — uncommitted code fixes never compiled, lookback window causes files to be permanently missed, CWD path mismatches cause silent skips.
+
+### Root Causes Identified
+
+1. **Uncommitted code never compiled** — TranscriptParser CWD extraction, NexusApiClient Accept header, SyncEngine skip logging all had fixes in working directory that were never built
+2. **10-minute lookback window** — Files older than 10 min are invisible to the scanner. If app is stopped during active sessions, those files are permanently missed
+3. **CWD path mismatch** — Transcript CWD points to `c:\xampp\htdocs\X` but project may live at `c:\xampp7\htdocs\X` (dual XAMPP installs for PHP 7.x vs 8.x)
+4. **Non-transcript JSONL files** — Claude Code creates `file-history-snapshot` and `queue-operation` type files that have no `sessionId`, causing noisy "No sessionId" log entries every cycle
+5. **Activity log nearly useless** — Only shows sync_start/sync_complete with totals, no file names, no skip reasons, no project context
+
+### Steps
+
+| Step | Description | Agent | Status |
+|------|-------------|-------|--------|
+| A.7.1 | Compile and verify the 3 uncommitted fixes (CWD extraction from top-level `cwd` property, Accept header on request not content, skip reason logging) | dev | DONE |
+| A.7.2 | Replace lookback-based scanning with state-based scanning: remove `LookbackMinutes`, scan ALL `.jsonl` files, StateManager is the sole filter (skip files matching path+size in state) | dev | DONE |
+| A.7.3 | Filter non-transcript files early: skip `file-history-snapshot`/`queue-operation`-only files and `acompact-` files without logging noise. Non-transcript files marked as `ignored` in state. | dev | DONE |
+| A.7.4 | Add CWD fallback in `TranscriptParser.ExtractProjectHash()`: if CWD path doesn't exist, try `c:\xampp7\htdocs\` equivalent (swap `c:\xampp\` prefix for `c:\xampp7\`). Log skip with reason if neither exists | dev | DONE |
+| A.7.5 | Improve activity log: log each processed file with project name + outcome (uploaded / skipped with reason / error). Suppress "no change" skips. Non-transcript files debug-logged only. | dev | DONE |
+| A.7.6 | Remove `LookbackMinutes` from `AppConfig` and `SettingsWindow` (no longer used) | dev | DONE |
+| A.7.7 | Build release, clear `sync-state.json`, run against all local files, verify historical files get uploaded | dev | DONE |
+
+### Migration Strategy
+
+**No database wipe needed.** The server-side deduplication handles everything gracefully:
+
+1. Delete (or empty) `%APPDATA%\Nexus\sync-state.json`
+2. On next sync, scanner finds ALL `.jsonl` files (no lookback filter)
+3. For each file:
+   - **Already in DB** (has matching `transcript_id`): server resumes from `transcript_lines_processed`, processes only new lines — zero duplicates
+   - **Not in DB** (previously missed): server creates new session, processes all lines — fills the gaps
+4. After first full cycle, `sync-state.json` is rebuilt with all files tracked
+5. Subsequent cycles are incremental (only changed files re-uploaded)
+
+**One-time cost**: First run uploads all files (hundreds), but server handles each quickly. After that, normal incremental behavior resumes.
+
+---
+
+## Phase A.7 — Test Plan (Sync Module)
+
+**Status**: Future reference (Phase B). Test projects: `Nexus.Sync.Tests`, `Nexus.Core.Tests`.
+
+Tests are organized per model/service. Each test file follows the naming convention `[ClassName]Tests.cs`.
+
+---
+
+### TranscriptParserTests
+
+| # | Test | What it verifies |
+|---|------|-----------------|
+| 1 | `test_Parse_RealTranscript_ExtractsSessionIdAndCwd` | Parses a `.jsonl` with `user`/`assistant` entries, returns correct `SessionId` and `Cwd` |
+| 2 | `test_Parse_NonTranscriptFile_ReturnsSkipReason` | File with only `file-history-snapshot`/`queue-operation` entries returns `SkipReason`, no `SessionId` |
+| 3 | `test_Parse_MixedEntries_ExtractsFromRealEntries` | File with non-transcript entries mixed in still extracts `SessionId` and `Cwd` from real entries |
+| 4 | `test_Parse_EmptyFile_ReturnsNull` | Empty file returns `null` |
+| 5 | `test_Parse_MalformedJson_SkipsLinesGracefully` | Malformed JSON lines are skipped, valid lines still parsed |
+| 6 | `test_Parse_NoSessionId_ReturnsNull` | File with real entries but no `sessionId` property returns `null` |
+| 7 | `test_Parse_NoCwd_ReturnsSkipReasonNoWorkingDirectory` | File with `sessionId` but no `cwd` returns metadata with `SkipReason` |
+| 8 | `test_ExtractProjectHash_ValidClaudeMd_ReturnsHash` | Directory with `CLAUDE.md` containing `NEXUS_PROJECT_HASH_ID=abc123` returns the hash |
+| 9 | `test_ExtractProjectHash_NoClaudeMd_ReturnsSkipReason` | Directory exists but has no `CLAUDE.md` — returns reason |
+| 10 | `test_ExtractProjectHash_ClaudeMdNoHash_ReturnsSkipReason` | `CLAUDE.md` exists but has no `NEXUS_PROJECT_HASH_ID` line — returns reason |
+| 11 | `test_ExtractProjectHash_DirectoryNotFound_ReturnsSkipReason` | Non-existent directory (no XAMPP fallback match) — returns reason with path |
+| 12 | `test_ExtractProjectHash_XamppFallback_FindsAlternatePath` | CWD points to `c:\xampp\htdocs\X` (doesn't exist), falls back to `c:\xampp7\htdocs\X` (exists) |
+| 13 | `test_ExtractProjectHash_XamppFallbackReverse_FindsAlternatePath` | CWD points to `c:\xampp7\htdocs\X`, falls back to `c:\xampp\htdocs\X` |
+| 14 | `test_GetXamppFallbackPath_NonXamppPath_ReturnsNull` | Path like `D:\projects\X` has no fallback |
+| 15 | `test_Parse_SessionIdAndCwdFoundEarly_StopsReadingLines` | With `sessionId`, `cwd`, and a real entry all in first 3 lines, parser breaks early (doesn't read all 30) |
+
+---
+
+### TranscriptScannerTests
+
+| # | Test | What it verifies |
+|---|------|-----------------|
+| 1 | `test_Scan_FindsJsonlFiles` | Returns all `.jsonl` files from project subdirectories |
+| 2 | `test_Scan_SkipsAcompactFiles` | Files starting with `acompact-` are excluded |
+| 3 | `test_Scan_NonExistentDirectory_ReturnsEmpty` | Missing `~/.claude/projects/` returns empty list |
+| 4 | `test_Scan_EmptyDirectory_ReturnsEmpty` | Existing directory with no `.jsonl` files returns empty list |
+| 5 | `test_Scan_SetsProjectSlugFromDirectoryName` | `ProjectSlug` matches the parent directory name |
+| 6 | `test_Scan_SetsFileSizeCorrectly` | `FileSize` matches actual file size on disk |
+| 7 | `test_Scan_DirectoryReadError_ContinuesOtherDirs` | One directory throws an exception, other directories still scanned |
+
+---
+
+### StateManagerTests
+
+| # | Test | What it verifies |
+|---|------|-----------------|
+| 1 | `test_HasChanged_NewFile_ReturnsTrue` | File not in state → `true` |
+| 2 | `test_HasChanged_SameSizeFile_ReturnsFalse` | File in state with matching size → `false` |
+| 3 | `test_HasChanged_DifferentSizeFile_ReturnsTrue` | File in state with different size → `true` |
+| 4 | `test_MarkUploaded_SetsStatusUploaded` | Entry has `Status = "uploaded"` |
+| 5 | `test_MarkIgnored_SetsStatusIgnored` | Entry has `Status = "ignored"` |
+| 6 | `test_Save_PersistsToDisk` | Save + reload preserves all entries |
+| 7 | `test_Load_CorruptFile_ReturnsEmptyState` | Corrupt JSON file doesn't crash, returns fresh state |
+| 8 | `test_Load_MissingFile_ReturnsEmptyState` | Non-existent file returns fresh state |
+| 9 | `test_HasChanged_IgnoredFileUnchanged_ReturnsFalse` | Ignored file with same size is still skipped |
+| 10 | `test_HasChanged_IgnoredFileChanged_ReturnsTrue` | Ignored file with different size triggers re-evaluation |
+
+---
+
+### SubagentMapperTests
+
+| # | Test | What it verifies |
+|---|------|-----------------|
+| 1 | `test_MapSubagents_FindsDevAgent` | `Task` tool_use with `subagent_type: "dev"` + matching tool_result with `agentId` → returns `SubagentInfo` |
+| 2 | `test_MapSubagents_SkipsExploreType` | `subagent_type: "Explore"` is in `SkipTypes` — not returned |
+| 3 | `test_MapSubagents_SkipsPlanType` | `subagent_type: "Plan"` is in `SkipTypes` — not returned |
+| 4 | `test_MapSubagents_MultipleSubagents_ReturnsAll` | Multiple valid subagents in one transcript all returned |
+| 5 | `test_MapSubagents_NoTaskToolUse_ReturnsEmpty` | Transcript with no `Task` tool uses → empty list |
+| 6 | `test_MapSubagents_ToolUseWithoutToolResult_NotReturned` | `Task` tool_use exists but no matching `tool_result` with `agentId` → not returned |
+| 7 | `test_MapSubagents_MalformedLines_SkippedGracefully` | Bad JSON lines don't crash the mapper |
+| 8 | `test_MapSubagents_ValidatesAgentCodes` | Unknown `subagent_type` not in `ValidAgentCodes` is excluded |
+
+---
+
+### SyncEngineTests
+
+| # | Test | What it verifies |
+|---|------|-----------------|
+| 1 | `test_RunSync_UnchangedFiles_SkippedByState` | Files matching state size are skipped, `skipCount` incremented |
+| 2 | `test_RunSync_NonTranscriptFiles_MarkedIgnored` | Non-transcript files are marked `"ignored"` in state, not logged to activity |
+| 3 | `test_RunSync_SuccessfulUpload_MarkedUploaded` | After successful API upload, file is marked `"uploaded"` in state |
+| 4 | `test_RunSync_AuthError_StopsCycle` | 401 response stops the loop, doesn't continue to next file |
+| 5 | `test_RunSync_ApiError_ContinuesToNextFile` | Non-auth API error increments `errorCount`, continues to next file |
+| 6 | `test_RunSync_SubagentDetected_UploadsSubagentFile` | Subagent file found and uploaded with correct `parent_transcript_id` and `subagent_type` |
+| 7 | `test_RunSync_SubagentFileMissing_LogsAndContinues` | Subagent mapped but `.jsonl` file doesn't exist — logged, not an error |
+| 8 | `test_RunSync_SubagentReadFailure_IncrementsErrorCount` | Subagent file read exception increments `errorCount` |
+| 9 | `test_RunSync_FlushAfterSyncComplete` | `_activity.Flush()` is called after `sync_complete` log entry |
+| 10 | `test_RunSync_LastSyncHadErrors_SetCorrectly` | `LastSyncHadErrors` is `true` when `errorCount > 0`, `false` otherwise |
+| 11 | `test_RunSync_StateSavedAfterCycle` | `_state.Save()` is called at end of cycle |
+| 12 | `test_RunSync_ParseFailure_IncrementsParseSkipCount` | File that returns `null` from parser increments `parseSkipCount` |
+
+---
+
+### NexusApiClientTests
+
+| # | Test | What it verifies |
+|---|------|-----------------|
+| 1 | `test_UploadTranscript_Success_ReturnsOk` | 202 response → `Success = true` |
+| 2 | `test_UploadTranscript_AuthError_ReturnsIsAuthError` | 401 response → `IsAuthError = true` |
+| 3 | `test_UploadTranscript_ValidationError_ReturnsIsValidationError` | 422 response → `IsValidationError = true` |
+| 4 | `test_UploadTranscript_Timeout_ReturnsTimedOut` | `TaskCanceledException` → `Message` contains "timed out" |
+| 5 | `test_UploadTranscript_ConnectionError_ReturnsConnectionError` | `HttpRequestException` → descriptive error message |
+| 6 | `test_UploadTranscript_ExcludesNullFields` | `subagent_type: null` is not sent in JSON payload |
+| 7 | `test_UploadTranscript_AcceptHeaderSet` | Request includes `Accept: application/json` header |
+| 8 | `test_Login_Success_ReturnsBodyWithTokenInfo` | 200 response → `Success = true`, `Message` contains response body |
+| 9 | `test_Login_InvalidCredentials_Returns401` | 401 response → `Success = false`, `StatusCode = 401` |
+
+---
+
+### Test Infrastructure Notes
+
+- **SyncEngine tests** require mocking all dependencies (Scanner, Parser, StateManager, ApiClient, etc.) — requires interfaces (Phase B/C item A1)
+- **TranscriptParser and TranscriptScanner** can be tested with temp directories and fixture `.jsonl` files
+- **StateManager** can be tested with temp files
+- **SubagentMapper** is pure logic — easy to test with raw JSONL strings
+- **NexusApiClient** requires an `HttpMessageHandler` mock or `IHttpClientFactory`
 
 ---
 

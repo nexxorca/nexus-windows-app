@@ -17,7 +17,7 @@ public class SubagentMapper {
         "general-purpose", "statusline-setup"
     };
 
-    public SubagentMapper(LogService log) {
+    public SubagentMapper( LogService log ) {
         _log = log;
     }
 

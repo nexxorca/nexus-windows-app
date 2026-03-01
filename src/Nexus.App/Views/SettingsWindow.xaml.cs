@@ -15,7 +15,7 @@ public partial class SettingsWindow : Window {
         _activity = activity;
 
         txtInterval.Text = config.SyncIntervalSeconds.ToString();
-        txtLookback.Text = config.LookbackMinutes.ToString();
+        lblVersion.Text = "v" + (System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?");
     }
 
     private void BtnSave_Click( object sender, RoutedEventArgs e ) {
@@ -23,12 +23,8 @@ public partial class SettingsWindow : Window {
             _config.SyncIntervalSeconds = interval;
         }
 
-        if ( int.TryParse(txtLookback.Text, out var lookback) && lookback > 0 ) {
-            _config.LookbackMinutes = lookback;
-        }
-
         _config.Save();
-        _activity.Log("config_change", $"Settings updated: interval={_config.SyncIntervalSeconds}s, lookback={_config.LookbackMinutes}m");
+        _activity.Log("config_change", $"Settings updated: interval={_config.SyncIntervalSeconds}s");
         Close();
     }
 

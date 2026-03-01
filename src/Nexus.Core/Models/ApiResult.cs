@@ -9,6 +9,7 @@ public class ApiResult {
     public bool IsAuthError => StatusCode == 401;
     public bool IsValidationError => StatusCode == 422;
     public bool IsServerError => StatusCode >= 500;
+    public bool IsRateLimited => StatusCode == 429;
 
     public static ApiResult Ok( string? message = null ) => new() {
         Success = true,

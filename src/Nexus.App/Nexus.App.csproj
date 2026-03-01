@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="2.0.1" />
+    <PackageReference Include="Velopack" Version="0.0.1298" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -16,10 +17,17 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Resources\nexus.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+    <StartupObject>Nexus.App.App</StartupObject>
   </PropertyGroup>
 
   <ItemGroup>
     <Resource Include="Resources\nexus.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ApplicationDefinition Remove="App.xaml" />
+    <Page Include="App.xaml" />
   </ItemGroup>
 
 </Project>

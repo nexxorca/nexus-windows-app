@@ -7,4 +7,5 @@ public class SyncState {
 public class FileState {
     public long Size { get; set; }
     public string Timestamp { get; set; } = "";
+    public string Status { get; set; } = "uploaded";
 }
