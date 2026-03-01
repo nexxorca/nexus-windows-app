@@ -90,7 +90,7 @@ public partial class App : Application {
         _updateTimer.Start();
     }
 
-    private void TriggerUpdateCheck() {
+    public void TriggerUpdateCheck() {
         _ = Task.Run(async () => {
             try {
                 var currentVersion = System.Reflection.Assembly.GetExecutingAssembly()

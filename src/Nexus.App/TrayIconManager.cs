@@ -93,6 +93,10 @@ public class TrayIconManager : IDisposable {
         settings.Click += ( s, e ) => ShowSettings();
         menu.Items.Add(settings);
 
+        var checkUpdates = new MenuItem { Header = "Check for Updates" };
+        checkUpdates.Click += ( s, e ) => _app.TriggerUpdateCheck();
+        menu.Items.Add(checkUpdates);
+
         menu.Items.Add(new Separator());
 
         if ( _config.IsLoggedIn ) {
