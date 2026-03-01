@@ -129,28 +129,4 @@ public class NexusApiClient {
             // Fire-and-forget — if revoke fails (offline, expired), proceed with local logout
         }
     }
-
-    public async Task<(string Version, string DownloadUrl)?> CheckForUpdateAsync( string currentVersion ) {
-        try {
-            var url = _baseUrl + "/api/v1/app/latest-release";
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            var response = await _http.GetAsync(url, cts.Token);
-
-            if ( ! response.IsSuccessStatusCode ) return null;
-
-            var body = await response.Content.ReadAsStringAsync();
-            using var doc = JsonDocument.Parse(body);
-            var root = doc.RootElement;
-
-            if ( ! root.TryGetProperty("version", out var versionEl) || versionEl.ValueKind == JsonValueKind.Null ) return null;
-
-            var latestVersion = versionEl.GetString();
-            if ( string.IsNullOrEmpty(latestVersion) || latestVersion == currentVersion ) return null;
-
-            var downloadUrl = root.GetProperty("download_url").GetString() ?? "";
-            return (latestVersion, downloadUrl);
-        } catch {
-            return null;
-        }
-    }
 }

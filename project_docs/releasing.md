@@ -28,16 +28,20 @@ bash release.sh 1.0.1
 
 Replace `1.0.1` with the new version number (semver: `MAJOR.MINOR.PATCH`).
 
+**Version number limits:**
+- Each component (major, minor, patch) is a 32-bit integer — theoretical max per component: 2,147,483,647
+- Practical limit: keep each component ≤ **65,535** — .NET `AssemblyVersion` caps components at 65,535 (UInt16); values above this will cause a build error
+- 4-part versions (e.g., `1.0.5.1`) are supported by Velopack (NuGet versioning) but follow the same 65,535 limit per component
+
 ---
 
 ## What the Script Does
 
 1. **Build** — `dotnet publish` compiles a self-contained win-x64 release into `./publish/`
 2. **Clean** — removes any existing `.nupkg` / `.exe` for this version from `./Releases/`
-3. **Pack** — `vpk pack` produces `./Releases/NexusApp-{VERSION}-full.nupkg` (and `Setup.exe`)
-4. **Upload** — `curl` POSTs the `.nupkg` to `POST /api/v1/app/releases` on the Nexus server
-
-On success, the server returns `{"version":"1.0.1"}` and marks it as `is_latest` in the DB.
+3. **Pack** — `vpk pack` produces `./Releases/NexusApp-{VERSION}-full.nupkg`, delta nupkg, and manifest files
+4. **Upload nupkg** — POSTs the full `.nupkg` to `POST /api/v1/app/releases` (marks as `is_latest` in DB)
+5. **Upload manifests** — POSTs `RELEASES`, `releases.win.json`, and the delta nupkg to `POST /api/v1/app/releases/manifest` (these are what Velopack reads to detect and download updates)
 
 ---
 

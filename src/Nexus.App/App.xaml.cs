@@ -94,21 +94,16 @@ public partial class App : Application {
     public void TriggerUpdateCheck() {
         _ = Task.Run(async () => {
             try {
-                var currentVersion = System.Reflection.Assembly.GetExecutingAssembly()
-                    .GetName().Version?.ToString(3) ?? "1.0.0";
-
-                var update = await _api.CheckForUpdateAsync(currentVersion);
-                if ( update is null ) return;
-
-                var manager = new UpdateManager(update.Value.DownloadUrl);
+                var manager = new UpdateManager(_config.NexusUrl + "/api/v1/app/releases");
                 var updateInfo = await manager.CheckForUpdatesAsync();
                 if ( updateInfo is null ) return;
 
                 await manager.DownloadUpdatesAsync(updateInfo);
 
                 Dispatcher.Invoke(() => {
+                    var newVersion = updateInfo.TargetFullRelease.Version.ToString();
                     var result = MessageBox.Show(
-                        $"Version {update.Value.Version} is available. Restart now to update?",
+                        $"Version {newVersion} is available. Restart now to update?",
                         "Update Available",
                         MessageBoxButton.YesNo,
                         MessageBoxImage.Information

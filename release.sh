@@ -33,4 +33,21 @@ curl --fail -X POST "$NEXUS_URL/api/v1/app/releases" \
   -F "file=@$NUPKG"
 echo "Upload complete."
 
+echo "Uploading release manifests..."
+curl --fail -X POST "$NEXUS_URL/api/v1/app/releases/manifest" \
+  -H "Authorization: Bearer $RELEASE_SECRET" \
+  -F "file=@./Releases/RELEASES"
+
+curl --fail -X POST "$NEXUS_URL/api/v1/app/releases/manifest" \
+  -H "Authorization: Bearer $RELEASE_SECRET" \
+  -F "file=@./Releases/releases.win.json"
+
+DELTA="./Releases/NexusApp-$VERSION-delta.nupkg"
+if [ -f "$DELTA" ]; then
+    echo "Uploading delta package..."
+    curl --fail -X POST "$NEXUS_URL/api/v1/app/releases/manifest" \
+      -H "Authorization: Bearer $RELEASE_SECRET" \
+      -F "file=@$DELTA"
+fi
+
 echo "Done. Version $VERSION released."
