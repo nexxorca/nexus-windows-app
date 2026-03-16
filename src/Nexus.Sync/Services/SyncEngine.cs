@@ -59,6 +59,13 @@ public class SyncEngine {
                     continue;
                 }
 
+                var lastWrite = File.GetLastWriteTimeUtc(file.FilePath);
+                if ( (DateTime.UtcNow - lastWrite).TotalMinutes < 5 ) {
+                    _log.Write($"Deferring active file: {Path.GetFileName(file.FilePath)}");
+                    skipCount++;
+                    continue;
+                }
+
                 var metadata = _parser.Parse(file.FilePath);
 
                 if ( metadata == null ) {
@@ -69,19 +76,14 @@ public class SyncEngine {
                 }
 
                 if ( string.IsNullOrEmpty(metadata.ProjectHashId) ) {
-                    var reason = metadata.SkipReason ?? "Unknown skip reason";
-
                     if ( string.IsNullOrEmpty(metadata.SessionId) ) {
-                        _log.Write($"Skipping (non-transcript): {reason} — {file.FilePath}");
+                        _log.Write($"Skipping (non-transcript): {metadata.SkipReason} — {file.FilePath}");
                         _state.MarkIgnored(file.FilePath, file.FileSize);
                         parseSkipCount++;
                         continue;
                     }
 
-                    _log.Write($"Skipping: {reason} — {file.FilePath}");
-                    _activity.Log("sync_skip", $"Skipped: {reason} — {Path.GetFileName(file.FilePath)}");
-                    parseSkipCount++;
-                    continue;
+                    // Valid session without a project — upload as unassigned
                 }
 
                 var fileSize = new FileInfo(file.FilePath).Length;
@@ -104,12 +106,30 @@ public class SyncEngine {
                     continue;
                 }
 
-                var result = await _api.UploadTranscript(
-                    metadata.ProjectHashId,
-                    metadata.SessionId,
-                    "main",
-                    content
-                );
+                ApiResult result = null!;
+                var maxAttempts = 2;
+                for ( var attempt = 1; attempt <= maxAttempts; attempt++ ) {
+                    result = await _api.UploadTranscript(
+                        metadata.ProjectHashId,
+                        metadata.SessionId,
+                        "main",
+                        content
+                    );
+
+                    if ( result.Success || result.IsAuthError || result.IsValidationError || attempt == maxAttempts ) break;
+
+                    _log.Write($"Upload attempt {attempt} failed, retrying in 5s: {Path.GetFileName(file.FilePath)}");
+                    await Task.Delay(5000);
+
+                    try {
+                        using var retryStream = new FileStream(file.FilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                        using var retryReader = new StreamReader(retryStream);
+                        content = await retryReader.ReadToEndAsync();
+                    } catch ( Exception ex ) {
+                        _log.Error($"Failed to re-read file for retry: {file.FilePath}", ex);
+                        break;
+                    }
+                }
 
                 if ( result.IsAuthError ) {
                     _activity.Log("api_error", "Authentication failed — check login", "error");
@@ -123,7 +143,7 @@ public class SyncEngine {
                     var detail = result.IsValidationError && ! string.IsNullOrEmpty(result.ErrorDetail)
                         ? result.ErrorDetail
                         : result.Message;
-                    _activity.Log("api_error", $"Upload failed: {detail}", "error");
+                    _activity.Log("api_error", $"Upload failed: {detail} — {Path.GetFileName(file.FilePath)}", "error");
                     errorCount++;
                     continue;
                 }
@@ -175,14 +195,32 @@ public class SyncEngine {
                         continue;
                     }
 
-                    var subResult = await _api.UploadTranscript(
-                        metadata.ProjectHashId,
-                        subSessionId,
-                        "subagent",
-                        subContent,
-                        sub.SubagentType,
-                        metadata.SessionId
-                    );
+                    ApiResult subResult = null!;
+                    var subMaxAttempts = 2;
+                    for ( var attempt = 1; attempt <= subMaxAttempts; attempt++ ) {
+                        subResult = await _api.UploadTranscript(
+                            metadata.ProjectHashId,
+                            subSessionId,
+                            "subagent",
+                            subContent,
+                            sub.SubagentType,
+                            metadata.SessionId
+                        );
+
+                        if ( subResult.Success || subResult.IsAuthError || subResult.IsValidationError || attempt == subMaxAttempts ) break;
+
+                        _log.Write($"Subagent upload attempt {attempt} failed, retrying in 5s: {Path.GetFileName(subFilePath)}");
+                        await Task.Delay(5000);
+
+                        try {
+                            using var retryStream = new FileStream(subFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                            using var retryReader = new StreamReader(retryStream);
+                            subContent = await retryReader.ReadToEndAsync();
+                        } catch ( Exception ex ) {
+                            _log.Error($"Failed to re-read subagent file for retry: {subFilePath}", ex);
+                            break;
+                        }
+                    }
 
                     if ( subResult.IsAuthError ) {
                         _activity.Log("api_error", "Authentication failed — check login", "error");
@@ -200,7 +238,7 @@ public class SyncEngine {
                         var detail = subResult.IsValidationError && ! string.IsNullOrEmpty(subResult.ErrorDetail)
                             ? subResult.ErrorDetail
                             : subResult.Message;
-                        _activity.Log("api_error", $"Subagent upload failed: {detail}", "error");
+                        _activity.Log("api_error", $"Subagent upload failed: {detail} — {sub.SubagentType} ({Path.GetFileName(subFilePath)})", "error");
                         errorCount++;
                     }
                 }

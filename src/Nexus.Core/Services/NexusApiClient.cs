@@ -72,7 +72,7 @@ public class NexusApiClient {
     }
 
     public async Task<ApiResult> UploadTranscript(
-        string projectHashId, string sessionId, string type,
+        string? projectHashId, string sessionId, string type,
         string content, string? subagentType = null,
         string? parentTranscriptId = null
     ) {
@@ -80,11 +80,14 @@ public class NexusApiClient {
             var url = _baseUrl + "/api/v1/transcripts";
 
             var payload = new Dictionary<string, string> {
-                ["project_hash_id"] = projectHashId,
                 ["session_id"] = sessionId,
                 ["type"] = type,
                 ["content"] = content
             };
+
+            if ( projectHashId != null ) {
+                payload["project_hash_id"] = projectHashId;
+            }
 
             if ( subagentType != null ) {
                 payload["subagent_type"] = subagentType;
@@ -97,7 +100,7 @@ public class NexusApiClient {
             var json = JsonSerializer.Serialize(payload, _jsonOptions);
             var httpContent = new StringContent(json, Encoding.UTF8, "application/json");
 
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(300));
             var response = await _http.PostAsync(url, httpContent, cts.Token);
             var body = await response.Content.ReadAsStringAsync();
 
