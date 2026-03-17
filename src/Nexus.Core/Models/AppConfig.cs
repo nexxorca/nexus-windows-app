@@ -10,6 +10,7 @@ public class AppConfig {
     public string? UserHashId { get; set; }
     public string? UserName { get; set; }
     public int SyncIntervalSeconds { get; set; } = 60;
+    public bool LaunchOnStartup { get; set; } = false;
 
     public bool IsLoggedIn => ! string.IsNullOrEmpty(AuthToken);
     public bool IsValid => ! string.IsNullOrEmpty(NexusUrl) && IsLoggedIn;

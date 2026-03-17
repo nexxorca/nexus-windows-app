@@ -58,6 +58,15 @@ Replace `1.0.1` with the new version number (semver: `MAJOR.MINOR.PATCH`).
 
 ---
 
+## Versioning
+
+- The **release script owns the version number**. `release.sh` updates `<Version>` in the csproj as its first step.
+- `/push-dev` does **not** bump the version — it writes the changelog entry under the current csproj version.
+- The version in the csproj always reflects the **last released version**.
+- To determine the next release version: read the csproj `<Version>`, increment patch (or minor/major as needed), and pass it to `release.sh`.
+
+---
+
 ## Notes
 
 - The `RELEASE_SECRET` in `release.sh` must match `RELEASE_SECRET` in the server's `.env` (set via Forge)

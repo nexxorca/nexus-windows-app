@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.11] - 2026-03-17
+
+### Added
+- "Launch on startup" setting — registers app in Windows startup via HKCU registry key
+- StartupManager static helper for registry read/write
+- Checkbox in Settings window to toggle launch-on-startup
+
 ## [1.0.10] - 2026-03-16
 
 ### Fixed

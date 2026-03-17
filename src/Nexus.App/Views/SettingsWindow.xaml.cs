@@ -15,6 +15,7 @@ public partial class SettingsWindow : Window {
         _activity = activity;
 
         txtInterval.Text = config.SyncIntervalSeconds.ToString();
+        chkLaunchOnStartup.IsChecked = config.LaunchOnStartup;
         lblVersion.Text = "v" + (System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?");
     }
 
@@ -23,8 +24,12 @@ public partial class SettingsWindow : Window {
             _config.SyncIntervalSeconds = interval;
         }
 
+        var launchOnStartup = chkLaunchOnStartup.IsChecked == true;
+        StartupManager.SetLaunchOnStartup(launchOnStartup);
+        _config.LaunchOnStartup = launchOnStartup;
+
         _config.Save();
-        _activity.Log("config_change", $"Settings updated: interval={_config.SyncIntervalSeconds}s");
+        _activity.Log("config_change", $"Settings updated: interval={_config.SyncIntervalSeconds}s, launchOnStartup={launchOnStartup}");
         Close();
     }
 

@@ -1,6 +1,6 @@
 # Nexus Windows App - Structure
 
-> Last updated: 2026-03-16 | Project: `nexus-windows-app`
+> Last updated: 2026-03-17 | Project: `nexus-windows-app`
 
 ## Purpose
 Native WPF tray application that synchronizes Claude Code session transcripts from `~/.claude/projects/` to the Nexus server via API, with Velopack auto-update support.
@@ -25,7 +25,7 @@ src/
 
 ```
 src/Nexus.Core/Models/
-├── AppConfig.cs                     # NexusUrl, AuthToken (DPAPI encrypted), UserHashId, UserName, SyncIntervalSeconds
+├── AppConfig.cs                     # NexusUrl, AuthToken (DPAPI encrypted), UserHashId, UserName, SyncIntervalSeconds, LaunchOnStartup
 └── ApiResult.cs                     # Success, StatusCode, Message, ErrorDetail; IsAuthError (401), IsValidationError (422)
 
 src/Nexus.Sync/Models/
@@ -86,7 +86,7 @@ src/Nexus.Sync/Services/
 ```
 src/Nexus.App/
 ├── LoginWindow.xaml                 # Nexus URL, email, password — emits LoginSucceeded event
-├── SettingsWindow.xaml              # Sync interval config, version display (bottom-left)
+├── SettingsWindow.xaml              # Sync interval config, launch-on-startup toggle, version display (bottom-left)
 └── ActivityLogWindow.xaml           # Recent activity (200 entries), filter by type, timestamp/type/description/status columns
 ```
 
@@ -95,7 +95,8 @@ src/Nexus.App/
 ```
 src/Nexus.App/
 ├── App.xaml.cs                      # Single-instance (Mutex), wires services, manages tray + sync + update timers
-└── TrayIconManager.cs               # System tray icon, context menu, sync timer, tooltip updates
+├── TrayIconManager.cs               # System tray icon, context menu, sync timer, tooltip updates
+└── StartupManager.cs                # Static helper — registers/unregisters app in HKCU\...\Run for Windows startup
 ```
 
 ### TrayIconManager Menu
