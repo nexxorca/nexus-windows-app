@@ -89,3 +89,46 @@ publish/
 
 # Claude local settings
 .claude/settings.local.json
+
+# NEXXOR convention — required entries
+# Secrets / environment
+.env
+.env.backup
+.env.production
+.env.*.local
+auth.json
+
+# Agent tooling
+.playwright-mcp/
+.claude/screenshots/
+.claude/tmp/
+*.backup.*
+project_docs/backups/
+
+# Dependencies
+/vendor
+/node_modules
+
+# Laravel runtime
+/storage/*.key
+/storage/pail
+/bootstrap/cache/*
+/public/build
+/public/hot
+/public/storage
+
+# Testing caches
+/.phpunit.cache
+.phpunit.result.cache
+
+# Common log output
+npm-debug.log
+yarn-error.log
+
+# IDE / OS
+/.idea
+/.vscode
+/.fleet
+.phpactor.json
+.DS_Store
+*.stackdump

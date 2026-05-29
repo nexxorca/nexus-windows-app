@@ -37,23 +37,34 @@ public class SyncEngine {
         _activity = activity;
     }
 
-    public bool LastSyncHadErrors { get; private set; }
     public Action? OnAuthFailed { get; set; }
+    public bool IsRunning { get; private set; }
+    public SyncResult? LastSync { get; private set; }
+    public event Action? SyncStarted;
+    public event Action<SyncResult>? SyncCompleted;
 
+    // Must be called on the UI dispatcher. IsRunning is plain check-then-set, not Interlocked.
+    // All current callers (DispatcherTimer.Tick, tray menu, MainWindow buttons) run on the UI thread.
     public async Task RunSync() {
-        _activity.Log("sync_start", "Starting sync cycle");
-        _log.Write("=== Sync cycle started ===");
+        if ( IsRunning ) return;
+        IsRunning = true;
 
         var uploadCount = 0;
         var skipCount = 0;
         var parseSkipCount = 0;
         var errorCount = 0;
         var authFailed = false;
+        var status = "ok";
+
+        _activity.Log("sync_start", "Starting sync cycle");
+        _log.Write("=== Sync cycle started ===");
+        SyncStarted?.Invoke();
 
         try {
-            var files = _scanner.Scan();
+            try {
+                var files = _scanner.Scan();
 
-            foreach ( var file in files ) {
+                foreach ( var file in files ) {
                 if ( ! _state.HasChanged(file.FilePath, file.FileSize) ) {
                     skipCount++;
                     continue;
@@ -245,26 +256,35 @@ public class SyncEngine {
 
                 if ( authFailed ) break;
             }
-        } catch ( Exception ex ) {
-            _log.Error("Sync cycle failed with exception", ex);
-            _activity.Log("api_error", $"Sync failed: {ex.Message}", "error");
-            errorCount++;
+            } catch ( Exception ex ) {
+                _log.Error("Sync cycle failed with exception", ex);
+                _activity.Log("api_error", $"Sync failed: {ex.Message}", "error");
+                errorCount++;
+            }
+
+            _state.Save();
+
+            if ( authFailed ) {
+                OnAuthFailed?.Invoke();
+            }
+
+            status = errorCount > 0 ? "error" : "ok";
+
+            _activity.Log("sync_complete",
+                $"Sync: {uploadCount} uploaded, {skipCount} unchanged, {parseSkipCount} skipped, {errorCount} errors",
+                status);
+        } finally {
+            _activity.Flush();
+
+            var result = new SyncResult(
+                uploadCount, skipCount, parseSkipCount, errorCount, DateTime.Now, status
+            );
+            LastSync = result;
+
+            _log.Write($"=== Sync complete: {uploadCount} uploaded, {skipCount} unchanged, {parseSkipCount} skipped, {errorCount} errors ===");
+
+            IsRunning = false;
+            SyncCompleted?.Invoke(result);
         }
-
-        _state.Save();
-
-        if ( authFailed ) {
-            OnAuthFailed?.Invoke();
-        }
-
-        LastSyncHadErrors = errorCount > 0;
-
-        var status = errorCount > 0 ? "error" : "ok";
-        _activity.Log("sync_complete",
-            $"Sync: {uploadCount} uploaded, {skipCount} unchanged, {parseSkipCount} skipped, {errorCount} errors",
-            status);
-        _activity.Flush();
-
-        _log.Write($"=== Sync complete: {uploadCount} uploaded, {skipCount} unchanged, {parseSkipCount} skipped, {errorCount} errors ===");
     }
 }

@@ -123,6 +123,73 @@ public class NexusApiClient {
         }
     }
 
+    public async Task<ApiResult<AiConfigManifest>> GetAiConfigManifest() {
+        try {
+            var url = _baseUrl + "/api/v1/ai-config/manifest";
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var response = await _http.GetAsync(url, cts.Token);
+
+            if ( response.StatusCode == System.Net.HttpStatusCode.NotFound ) {
+                return ApiResult<AiConfigManifest>.Fail(404, "no snapshot");
+            }
+
+            if ( ! response.IsSuccessStatusCode ) {
+                var body = await response.Content.ReadAsStringAsync();
+                _log.Write($"GetAiConfigManifest failed: {(int)response.StatusCode} - {body}");
+                return ApiResult<AiConfigManifest>.Fail((int)response.StatusCode, "Manifest fetch failed", body);
+            }
+
+            var json = await response.Content.ReadAsStringAsync();
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            var manifest = JsonSerializer.Deserialize<AiConfigManifest>(json, options);
+
+            if ( manifest == null ) {
+                return ApiResult<AiConfigManifest>.Fail(0, "Failed to deserialize manifest");
+            }
+
+            return ApiResult<AiConfigManifest>.Ok(manifest);
+        } catch ( TaskCanceledException ) {
+            _log.Write("GetAiConfigManifest timed out");
+            return ApiResult<AiConfigManifest>.Fail(0, "Request timed out");
+        } catch ( HttpRequestException ex ) {
+            _log.Write($"GetAiConfigManifest connection error: {ex.Message}");
+            return ApiResult<AiConfigManifest>.Fail(0, ex.Message);
+        }
+    }
+
+    public async Task<ApiResult> DownloadAiConfigFile( string path, Stream destination ) {
+        try {
+            var url = _baseUrl + "/api/v1/ai-config/file?path=" + Uri.EscapeDataString(path);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(300));
+            var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+
+            if ( response.StatusCode == System.Net.HttpStatusCode.Unauthorized ) {
+                return ApiResult.Fail(401, "Unauthorized");
+            }
+
+            if ( response.StatusCode == System.Net.HttpStatusCode.NotFound ) {
+                return ApiResult.Fail(404, "File not found on server");
+            }
+
+            if ( ! response.IsSuccessStatusCode ) {
+                var body = await response.Content.ReadAsStringAsync();
+                _log.Write($"DownloadAiConfigFile failed [{path}]: {(int)response.StatusCode} - {body}");
+                return ApiResult.Fail((int)response.StatusCode, "Download failed", body);
+            }
+
+            await response.Content.CopyToAsync(destination, cts.Token);
+            return ApiResult.Ok();
+        } catch ( TaskCanceledException ) {
+            _log.Write($"DownloadAiConfigFile timed out [{path}]");
+            return ApiResult.Fail(0, "Request timed out");
+        } catch ( HttpRequestException ex ) {
+            _log.Write($"DownloadAiConfigFile connection error [{path}]: {ex.Message}");
+            return ApiResult.Fail(0, ex.Message);
+        }
+    }
+
     public async Task RevokeToken() {
         try {
             var url = _baseUrl + "/api/v1/auth/logout";

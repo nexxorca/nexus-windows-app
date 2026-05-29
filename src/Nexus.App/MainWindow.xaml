@@ -1,0 +1,55 @@
+<Window x:Class="Nexus.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Nexus Desktop"
+        Width="500" Height="400"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        ShowInTaskbar="True">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="Nexus Desktop" FontSize="16" FontWeight="Bold" Margin="0,0,0,15"/>
+
+        <!-- State panel -->
+        <Grid Grid.Row="1" Margin="0,0,0,20">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="User:" Margin="0,0,0,6" VerticalAlignment="Center"/>
+            <TextBlock Grid.Row="0" Grid.Column="1" x:Name="lblUserName" Margin="0,0,0,6" VerticalAlignment="Center"/>
+
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="Last sync:" Margin="0,0,0,6" VerticalAlignment="Center"/>
+            <TextBlock Grid.Row="1" Grid.Column="1" x:Name="lblLastSync" Margin="0,0,0,6" VerticalAlignment="Center"/>
+
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="Status:" Margin="0,0,0,6" VerticalAlignment="Center"/>
+            <TextBlock Grid.Row="2" Grid.Column="1" x:Name="lblStatus" Margin="0,0,0,6" VerticalAlignment="Center"/>
+
+            <TextBlock Grid.Row="3" Grid.Column="0" Text="Version:" VerticalAlignment="Center"/>
+            <TextBlock Grid.Row="3" Grid.Column="1" x:Name="lblVersion" Foreground="Gray" FontSize="11" VerticalAlignment="Center"/>
+        </Grid>
+
+        <!-- Action buttons -->
+        <StackPanel Grid.Row="3" Orientation="Vertical" HorizontalAlignment="Right">
+            <Button x:Name="btnSyncNow" Content="Sync Now" Width="140" Margin="0,0,0,8" Click="btnSyncNow_Click"/>
+            <Button x:Name="btnActivityLog" Content="Activity Log" Width="140" Margin="0,0,0,8" Click="btnActivityLog_Click"/>
+            <Button x:Name="btnSettings" Content="Settings" Width="140" Margin="0,0,0,8" Click="btnSettings_Click"/>
+            <Button x:Name="btnCheckUpdates" Content="Check for Updates" Width="140" Margin="0,0,0,8" Click="btnCheckUpdates_Click"/>
+            <Button x:Name="btnCheckAiConfig" Content="Check AI Config" Width="140" Margin="0,0,0,8" Click="btnCheckAiConfig_Click"/>
+            <Button x:Name="btnLogout" Content="Logout" Width="140" Click="btnLogout_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

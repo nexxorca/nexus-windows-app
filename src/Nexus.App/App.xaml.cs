@@ -1,9 +1,11 @@
-﻿using System.Text.Json;
+using System.IO;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Threading;
 
 using Nexus.Core.Models;
 using Nexus.Core.Services;
+using Nexus.Sync.Models;
 using Nexus.Sync.Services;
 
 using Velopack;
@@ -19,6 +21,9 @@ public partial class App : Application {
     private ActivityLogService _activity = null!;
     private NexusApiClient _api = null!;
     private SyncEngine _syncEngine = null!;
+    private AiConfigApplyService? _aiConfigApplyService;
+    private bool _aiConfigCheckInFlight;
+    private MainWindow? _mainWindow;
 
     [STAThread]
     public static void Main( string[] args ) {
@@ -29,6 +34,10 @@ public partial class App : Application {
     }
 
     protected override void OnStartup( StartupEventArgs e ) {
+        base.OnStartup(e);
+
+        CleanupOrphanAiConfigTmpFiles();
+
         _mutex = new Mutex(true, "NexusDesktopApp", out bool isNew);
         if ( ! isNew ) {
             MessageBox.Show("Nexus Desktop is already running.", "Nexus Desktop",
@@ -36,8 +45,6 @@ public partial class App : Application {
             Shutdown();
             return;
         }
-
-        base.OnStartup(e);
 
         // Load config
         _config = AppConfig.Load();
@@ -56,6 +63,7 @@ public partial class App : Application {
         var mapper = new SubagentMapper(_log);
         _syncEngine = new SyncEngine(_config, _api, stateManager, scanner, parser, mapper, _log, _activity);
         _syncEngine.OnAuthFailed = () => Dispatcher.Invoke(ShowLoginWindow);
+        _aiConfigApplyService = new AiConfigApplyService(_api, _activity, _log);
 
         // Init tray icon
         _trayManager = new TrayIconManager(_config, _syncEngine, _api, _activity, _log, this);
@@ -76,18 +84,22 @@ public partial class App : Application {
         loginWindow.Show();
     }
 
-    private void OnLoginSucceeded( object? sender, EventArgs e ) {
+    private async void OnLoginSucceeded( object? sender, EventArgs e ) {
         _api.Configure(_config.NexusUrl, _config.DecryptedToken);
         _trayManager?.UpdateUserName(_config.UserName ?? "");
         _trayManager?.StartSync();
         TriggerUpdateCheck();
         StartUpdateTimer();
+        await TriggerAiConfigCheck();
     }
 
     private void StartUpdateTimer() {
         if ( _updateTimer != null ) return;
         _updateTimer = new DispatcherTimer { Interval = TimeSpan.FromHours(4) };
-        _updateTimer.Tick += (_, _) => TriggerUpdateCheck();
+        _updateTimer.Tick += (_, _) => {
+            TriggerUpdateCheck();
+            _ = TriggerAiConfigCheck();  // fire-and-forget; UI thread (Tick fires on dispatcher)
+        };
         _updateTimer.Start();
     }
 
@@ -118,13 +130,103 @@ public partial class App : Application {
         });
     }
 
+    /// <summary>Must be invoked on the UI dispatcher (calls ShowDialog).</summary>
+    public async Task TriggerAiConfigCheck() {
+        if ( _aiConfigCheckInFlight ) return;
+        if ( ! _config.IsLoggedIn ) return;
+        if ( ! ClaudeCodeInstallProbe.IsInstalled() ) {
+            _activity.Log("ai_config_check", "Claude Code not installed — sync skipped", "warning");
+            return;
+        }
+        _aiConfigCheckInFlight = true;
+        try {
+            var result = await _api.GetAiConfigManifest();
+            if ( ! result.Success ) {
+                if ( result.StatusCode == 404 ) return;
+                _activity.Log("ai_config_check", $"manifest fetch failed: {result.Message}", "error");
+                return;
+            }
+            var manifest = result.Data!;
+            var current = File.Exists(AiConfigPaths.VersionMarkerPath)
+                ? File.ReadAllText(AiConfigPaths.VersionMarkerPath).Trim()
+                : "";
+            if ( current == manifest.Version ) return;
+            var prompt = new AiConfigUpdatePromptWindow(current, manifest.Version);
+            if ( prompt.ShowDialog() != true ) return;
+            var apply = await _aiConfigApplyService!.ApplyAsync(manifest);
+            _activity.Log("ai_config_apply", $"{apply.Status}: {apply.Message}", apply.Success ? "ok" : "error");
+            _mainWindow?.RefreshState();
+        } finally {
+            _aiConfigCheckInFlight = false;
+        }
+    }
+
+    public void ShowMainWindow() {
+        if ( ! _config.IsLoggedIn ) return;
+        _mainWindow ??= new MainWindow(_config, _syncEngine, _activity, this);
+        _mainWindow.RefreshState();
+        _mainWindow.Show();
+        if ( _mainWindow.WindowState == WindowState.Minimized ) _mainWindow.WindowState = WindowState.Normal;
+        _mainWindow.Activate();
+    }
+
+    public async Task TriggerSync() {
+        if ( ! _config.IsLoggedIn ) return;
+        await _syncEngine.RunSync();
+    }
+
+    public void ShowActivityLogWindow() {
+        var window = new Views.ActivityLogWindow(_activity);
+        window.Show();
+    }
+
+    public void ShowSettingsWindow() {
+        var window = new Views.SettingsWindow(_config, _activity);
+        window.Closed += ( s, e ) => {
+            _trayManager?.StopSync();
+            if ( _config.IsLoggedIn ) _trayManager?.StartSync();
+        };
+        window.Show();
+    }
+
+    public void PrepareForShutdown() {
+        _mainWindow?.AllowClose();
+        _mainWindow?.Close();
+    }
+
     public async void Logout() {
         _trayManager?.StopSync();
+        _mainWindow?.Hide();
+        _mainWindow?.RefreshState();
         _activity.Log("logout", $"User {_config.UserName} logged out");
         await _api.RevokeToken();
         _config.ClearLoginData();
         _trayManager?.UpdateUserName("");
         ShowLoginWindow();
+    }
+
+    // Sub-step 4.7: clean up orphan .tmp/.rollback.tmp files left by a process kill mid-apply.
+    // Runs before any sync or AI-config trigger can fire. Never throws — must not block startup.
+    private static void CleanupOrphanAiConfigTmpFiles() {
+        var claudeRoot = AiConfigPaths.ClaudeRoot;
+        if ( ! Directory.Exists(claudeRoot) ) return;
+
+        try {
+            var tmpFiles = Directory.GetFiles(claudeRoot, "*.tmp", SearchOption.AllDirectories)
+                .Concat(Directory.GetFiles(claudeRoot, "*.rollback.tmp", SearchOption.AllDirectories));
+
+            foreach ( var file in tmpFiles ) {
+                try {
+                    File.Delete(file);
+                } catch ( Exception ex ) {
+                    // Best-effort — individual failures are logged but never fatal
+                    var log = new LogService();
+                    log.Error($"Startup cleanup: failed to delete orphan tmp file {file}", ex);
+                }
+            }
+        } catch {
+            // If the directory walk itself fails, silently ignore — startup must not be blocked
+        }
     }
 
     protected override void OnExit( ExitEventArgs e ) {
@@ -137,4 +239,3 @@ public partial class App : Application {
         base.OnExit(e);
     }
 }
-

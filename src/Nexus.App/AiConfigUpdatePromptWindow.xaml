@@ -1,0 +1,23 @@
+<Window x:Class="Nexus.App.AiConfigUpdatePromptWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AI Config Update Available"
+        Width="420" Height="175"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="True"
+        Topmost="True"
+        ResizeMode="NoResize">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" x:Name="lblBody" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,0,15"/>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="btnApplyNow" Content="Apply Now" Width="90" Margin="0,0,10,0" Click="btnApplyNow_Click"/>
+            <Button x:Name="btnLater" Content="Later" Width="80" Click="btnLater_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

@@ -6,6 +6,7 @@ using Hardcodet.Wpf.TaskbarNotification;
 
 using Nexus.Core.Models;
 using Nexus.Core.Services;
+using Nexus.Sync.Models;
 using Nexus.Sync.Services;
 
 namespace Nexus.App;
@@ -19,10 +20,9 @@ public class TrayIconManager : IDisposable {
     private readonly ActivityLogService _activity;
     private readonly LogService _log;
     private readonly App _app;
-    private DateTime? _lastSyncTime;
-    private bool _isSyncing;
-    private bool _lastSyncFailed;
     private string _userName = "";
+    private Action _onSyncStarted;
+    private Action<SyncResult> _onSyncCompleted;
 
     public TrayIconManager(
         AppConfig config, SyncEngine syncEngine, NexusApiClient api,
@@ -44,10 +44,19 @@ public class TrayIconManager : IDisposable {
             Visibility = Visibility.Visible
         };
 
+        var ui = Application.Current.Dispatcher;
+        _onSyncStarted   = () => ui.Invoke(UpdateTooltip);
+        _onSyncCompleted = _  => ui.Invoke(UpdateTooltip);
+        _syncEngine.SyncStarted   += _onSyncStarted;
+        _syncEngine.SyncCompleted += _onSyncCompleted;
+
         _timer = new DispatcherTimer {
             Interval = TimeSpan.FromSeconds(config.SyncIntervalSeconds)
         };
-        _timer.Tick += async ( s, e ) => await RunSync();
+        _timer.Tick += async ( s, e ) => {
+            if ( ! _config.IsLoggedIn ) return;
+            await _syncEngine.RunSync();
+        };
 
         UpdateTooltip();
     }
@@ -81,16 +90,22 @@ public class TrayIconManager : IDisposable {
         menu.Items.Add(header);
         menu.Items.Add(new Separator());
 
+        if ( _config.IsLoggedIn ) {
+            var openNexus = new MenuItem { Header = "Open Nexus" };
+            openNexus.Click += ( s, e ) => _app.ShowMainWindow();
+            menu.Items.Add(openNexus);
+        }
+
         var syncNow = new MenuItem { Header = "Sync Now" };
-        syncNow.Click += async ( s, e ) => await RunSync();
+        syncNow.Click += async ( s, e ) => await _app.TriggerSync();
         menu.Items.Add(syncNow);
 
         var activityLog = new MenuItem { Header = "Activity Log" };
-        activityLog.Click += ( s, e ) => ShowActivityLog();
+        activityLog.Click += ( s, e ) => _app.ShowActivityLogWindow();
         menu.Items.Add(activityLog);
 
         var settings = new MenuItem { Header = "Settings" };
-        settings.Click += ( s, e ) => ShowSettings();
+        settings.Click += ( s, e ) => _app.ShowSettingsWindow();
         menu.Items.Add(settings);
 
         var checkUpdates = new MenuItem { Header = "Check for Updates" };
@@ -107,6 +122,7 @@ public class TrayIconManager : IDisposable {
 
         var exit = new MenuItem { Header = "Exit" };
         exit.Click += ( s, e ) => {
+            _app.PrepareForShutdown();
             _app.Shutdown();
         };
         menu.Items.Add(exit);
@@ -114,37 +130,17 @@ public class TrayIconManager : IDisposable {
         return menu;
     }
 
-    private async Task RunSync() {
-        if ( _isSyncing ) return;
-        if ( ! _config.IsLoggedIn ) return;
-
-        _isSyncing = true;
-        _timer.Stop();
-
-        try {
-            await _syncEngine.RunSync();
-            _lastSyncTime = DateTime.Now;
-            _lastSyncFailed = _syncEngine.LastSyncHadErrors;
-        } catch ( Exception ex ) {
-            _log.Error("Sync failed", ex);
-            _lastSyncFailed = true;
-        } finally {
-            _isSyncing = false;
-            UpdateTooltip();
-            _timer.Start();
-        }
-    }
-
     private void UpdateTooltip() {
         string status;
         if ( ! _config.IsLoggedIn ) {
             status = "Nexus Desktop — Not logged in";
-        } else if ( _lastSyncFailed ) {
-            var ago = _lastSyncTime.HasValue ? FormatTimeAgo(_lastSyncTime.Value) : "never";
-            status = $"Nexus Desktop — Error\nLast sync: {ago} (failed)";
-        } else if ( _lastSyncTime.HasValue ) {
-            var ago = FormatTimeAgo(_lastSyncTime.Value);
-            status = $"Nexus Desktop — Idle\nLast sync: {ago}";
+        } else if ( _syncEngine.IsRunning ) {
+            status = "Nexus Desktop — Syncing...";
+        } else if ( _syncEngine.LastSync is { } last ) {
+            var ago = FormatTimeAgo(last.CompletedAt);
+            status = last.Status == "error"
+                ? $"Nexus Desktop — Error\nLast sync: {ago} (failed)"
+                : $"Nexus Desktop — Idle\nLast sync: {ago}";
         } else {
             status = "Nexus Desktop — Idle\nLast sync: never";
         }
@@ -159,23 +155,9 @@ public class TrayIconManager : IDisposable {
         return $"{(int)diff.TotalHours}h ago";
     }
 
-    private void ShowActivityLog() {
-        var window = new Views.ActivityLogWindow(_activity);
-        window.Show();
-    }
-
-    private void ShowSettings() {
-        var window = new Views.SettingsWindow(_config, _activity);
-        window.Closed += ( s, e ) => {
-            // Restart timer with potentially new interval
-            _timer.Stop();
-            _timer.Interval = TimeSpan.FromSeconds(_config.SyncIntervalSeconds);
-            if ( _config.IsLoggedIn ) _timer.Start();
-        };
-        window.Show();
-    }
-
     public void Dispose() {
+        _syncEngine.SyncStarted   -= _onSyncStarted;
+        _syncEngine.SyncCompleted -= _onSyncCompleted;
         _timer.Stop();
         _trayIcon.Dispose();
     }
