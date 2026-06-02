@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.1] - 2026-06-02
+
+### Added
+- Unit test scaffolding — `Nexus.Sync.Tests` xUnit project covering `ManifestFingerprint`
+- `ManifestFingerprint.Compute(manifest)` — sha256 over sorted `{path}|{sha}` pairs; trigger catches server-side selection changes that leave `manifest.version` unchanged
+- `AiConfigPaths.FingerprintPath` (`%LOCALAPPDATA%\Nexus\ai-config-fingerprint`)
+
+### Changed
+- AI Config Sync **disabled** in this release — `TriggerAiConfigCheck()` early-returns pending a server-side kill switch on Nexus web. All triggers (login, 4h timer, MainWindow button) silently no-op. Re-enable by removing the early `return;` at the top of the method
+- AI Config Sync trigger compares manifest fingerprint instead of `manifest.version`
+- `AiConfigUpdatePromptWindow` takes only the new manifest version (no old → new pair)
+- `AiConfigApplyService` persists the fingerprint marker on success and deletes the legacy `ai-config-version` marker
+
 ## [1.2.0] - 2026-05-29
 
 ### Added

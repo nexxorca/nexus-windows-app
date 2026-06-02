@@ -3,9 +3,9 @@ using System.Windows;
 namespace Nexus.App;
 
 public partial class AiConfigUpdatePromptWindow : Window {
-    public AiConfigUpdatePromptWindow( string currentVersion, string newVersion ) {
+    public AiConfigUpdatePromptWindow( string newVersion ) {
         InitializeComponent();
-        lblBody.Text = $"v{currentVersion} → v{newVersion}. Close Claude Code sessions before applying — files in ~/.claude/ will be replaced.";
+        lblBody.Text = $"New AI config available: v{newVersion}. Close Claude Code sessions before applying — files in ~/.claude/ will be replaced.";
         Activate();
     }
 

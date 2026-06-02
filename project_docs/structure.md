@@ -1,19 +1,22 @@
 # Nexus Windows App - Structure
 
-> Last updated: 2026-05-29 | Project: `nexus-windows-app`
+> Last updated: 2026-06-02 | Project: `nexus-windows-app`
 
 ## Purpose
 Native WPF tray application that synchronizes Claude Code session transcripts from `~/.claude/projects/` to the Nexus server via API, with Velopack auto-update support.
 
 ---
 
-## Solution Structure (3 projects)
+## Solution Structure (3 projects + 1 test)
 
 ```
 src/
 ├── Nexus.App/                       # WPF executable — tray icon, windows, update checks
 ├── Nexus.Core/                      # Shared library — API client, config, logging
 └── Nexus.Sync/                      # Sync engine — scanning, parsing, upload orchestration
+
+tests/
+└── Nexus.Sync.Tests/                # xUnit unit tests — currently covers ManifestFingerprint
 ```
 
 - **Framework**: .NET 8.0 (`net8.0-windows`), self-contained win-x64
@@ -36,7 +39,7 @@ src/Nexus.Sync/Models/
 ├── SyncState.cs                     # Files dict<string, FileState> — upload tracking; FileState: Size, Timestamp, Status
 ├── SyncResult.cs                    # Uploaded, Skipped, ParseSkipped, Errors, CompletedAt, Status — immutable result emitted by SyncEngine.SyncCompleted
 ├── AiConfigApplyResult.cs           # Success, Status ("applied"|"rolled_back"|"aborted"|"skipped_no_snapshot"|"skipped_no_install"), Version?, Message?
-└── AiConfigPaths.cs                 # Constants: ClaudeRoot, BackupsRoot, VersionMarkerPath; ExclusionList; IsExcluded(relPath) predicate
+└── AiConfigPaths.cs                 # Constants: ClaudeRoot, BackupsRoot, VersionMarkerPath, FingerprintPath; ExclusionList; IsExcluded(relPath) predicate
 ```
 
 ### AppConfig Details
@@ -58,7 +61,8 @@ src/Nexus.Core/Services/
 
 src/Nexus.Sync/Services/
 ├── SyncEngine.cs                    # Main sync orchestrator — RunSync(), OnAuthFailed, event surface (IsRunning, LastSync, SyncStarted, SyncCompleted)
-├── AiConfigApplyService.cs          # AI config apply orchestrator — ApplyAsync(manifest) with backup, download, verify, write, rename, rollback, finalize
+├── AiConfigApplyService.cs          # AI config apply orchestrator — ApplyAsync(manifest) with backup, download, verify, write, rename, rollback, finalize; persists fingerprint marker
+├── ManifestFingerprint.cs           # Static helper — Compute(manifest) → sha256_hex of sorted "{path}|{sha}" pairs; trigger input for re-apply decision
 ├── StateManager.cs                  # Sync state persistence — HasChanged(), MarkUploaded(), MarkIgnored(), Save()
 ├── TranscriptScanner.cs             # Discovers .jsonl files in ~/.claude/projects/*/ — Scan()
 ├── TranscriptParser.cs              # Extracts metadata from first 30 lines — Parse() → TranscriptMetadata
@@ -100,7 +104,7 @@ src/Nexus.App/
 ├── LoginWindow.xaml                 # Nexus URL, email, password — emits LoginSucceeded event
 ├── SettingsWindow.xaml              # Sync interval config, launch-on-startup toggle, version display (bottom-left)
 ├── ActivityLogWindow.xaml           # Recent activity (200 entries), filter by type, timestamp/type/description/status columns
-└── AiConfigUpdatePromptWindow.xaml  # Modal popup — CurrentVersion → NewVersion; "Close Claude Code first"; buttons: Apply Now / Later; Topmost, CenterScreen
+└── AiConfigUpdatePromptWindow.xaml  # Modal popup — shows new manifest version; "Close Claude Code first"; buttons: Apply Now / Later; Topmost, CenterScreen
 ```
 
 ## App Entry Point
@@ -119,6 +123,7 @@ src/Nexus.App/
 - On startup (if logged in) + after login + every 4 hours via `DispatcherTimer`
 - Velopack `UpdateManager` fetches `{baseUrl}/api/v1/app/releases` → `releases.win.json`
 - AI Config Sync triggers on: login (after Velopack) + manual "Check AI Config" button + 4h timer (piggy-backs Velopack timer); uses `TriggerAiConfigCheck()` shared entry point with popup-stacking guard
+- **AI Config Sync is currently disabled** — `TriggerAiConfigCheck()` early-returns at the top, pending a server-side kill switch on Nexus web. All triggers (login, timer, MainWindow button) silently no-op. To re-enable: remove the early `return;` at the top of `TriggerAiConfigCheck()` in `App.xaml.cs`.
 
 ---
 
@@ -128,7 +133,8 @@ src/Nexus.App/
 %AppData%\Nexus/
 ├── config.json                      # App configuration (DPAPI-encrypted token)
 ├── sync-state.json                  # File upload tracking (path → size/status)
-├── ai-config-version                # Single-line text file: applied manifest version; machine-local (does NOT roam)
+├── ai-config-fingerprint            # Single-line text file: sha256 fingerprint of last-applied manifest files[]; machine-local (does NOT roam); drives re-apply trigger
+├── ai-config-version                # Legacy: deleted by AiConfigApplyService after first successful apply post-1.3.0 upgrade
 ├── debug.log                        # Timestamped debug/error log
 └── activity.log                     # JSONL activity entries (flushed on sync complete + exit)
 
@@ -143,13 +149,17 @@ src/Nexus.App/
 
 Keeps the dev's `~/.claude/` (agents, skills, conventions, hooks) in sync with the PM's server-side snapshot.
 
+> **Status: disabled in 1.2.1.** `TriggerAiConfigCheck()` early-returns at the top — all flow below describes the implementation, which is dormant until a server-side kill switch ships on Nexus web. Re-enable by removing the early return in `App.xaml.cs`.
+
 **Triggers:** Login + Manual "Check AI Config" button in MainWindow + every 4 hours (piggy-backs Velopack timer)
 
-**Flow:** Probe Claude Code install → fetch manifest → compare version → popup (if new version) → backup → download all files to temp → SHA-256 verify → two-phase write (`.tmp` + atomic rename) → rollback-on-failure (from backup) → perfect-fit delete (non-manifest non-excluded items) → version marker persist
+**Flow:** Probe Claude Code install → fetch manifest → compute `ManifestFingerprint.Compute(manifest)` → compare to stored `ai-config-fingerprint` → popup (if fingerprint differs) → backup → download all files to temp → SHA-256 verify → two-phase write (`.tmp` + atomic rename) → rollback-on-failure (from backup) → perfect-fit delete (non-manifest non-excluded items) → fingerprint marker persist (legacy version marker auto-deleted after first successful apply post-upgrade)
+
+**Trigger rationale:** Fingerprint = `sha256_hex(sorted("{path}|{sha}" for each file in manifest.files))`. Catches both snapshot version bumps AND sysadmin selection changes that leave `manifest.version` unchanged — any change to `files[]` shape (added/removed/sha-changed entry) produces a different fingerprint. `manifest.version` is preserved for log/UI display only, not for the trigger decision.
 
 **Key invariants:**
-- `~/.claude/` is always fully on version N or fully on version N+1 (no half-applied states; rollback restores from pre-apply backup on rename failure)
-- Version marker (`%LOCALAPPDATA%\Nexus\ai-config-version`) advances only on full success
+- `~/.claude/` is always fully on fingerprint F or fully on fingerprint F' (no half-applied states; rollback restores from pre-apply backup on rename failure)
+- Fingerprint marker (`%LOCALAPPDATA%\Nexus\ai-config-fingerprint`) advances only on full success
 - Exclusion list protects dev-local state: `projects/`, `settings.local.json`, credentials, caches, backups, etc.
 
 **Backup retention:** Last 5 backups in `~/.claude/backups/{YYYY-MM-DD_HHmmss}/`; cap-on-take pruning deletes oldest before each new apply. Manual escape hatch: copy files from backup folder to restore if needed.

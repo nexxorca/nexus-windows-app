@@ -18,6 +18,13 @@ public static class AiConfigPaths
             "ai-config-version"
         );
 
+    public static readonly string FingerprintPath =
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Nexus",
+            "ai-config-fingerprint"
+        );
+
     public static readonly IReadOnlyList<string> ExclusionList = new[]
     {
         "projects/",

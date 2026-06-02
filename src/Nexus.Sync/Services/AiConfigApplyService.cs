@@ -126,11 +126,22 @@ public class AiConfigApplyService {
             PerfectFitDelete(manifest);
             _activity.Log("ai_config_apply", "Perfect-fit delete: complete");
 
-            // Step 10: version marker
-            var markerDir = Path.GetDirectoryName(AiConfigPaths.VersionMarkerPath);
+            // Step 10: fingerprint marker (replaces version marker; manifest.Version preserved for log display only)
+            var fingerprint = ManifestFingerprint.Compute(manifest);
+            var markerDir = Path.GetDirectoryName(AiConfigPaths.FingerprintPath);
             if ( markerDir != null ) Directory.CreateDirectory(markerDir);
-            File.WriteAllText(AiConfigPaths.VersionMarkerPath, manifest.Version);
-            _activity.Log("ai_config_apply", $"Version marker written: {manifest.Version}");
+            File.WriteAllText(AiConfigPaths.FingerprintPath, fingerprint);
+            _activity.Log("ai_config_apply", $"Fingerprint marker written (version {manifest.Version})");
+
+            // 4.3: remove legacy ai-config-version file after first successful apply post-upgrade
+            if ( File.Exists(AiConfigPaths.VersionMarkerPath) ) {
+                try {
+                    File.Delete(AiConfigPaths.VersionMarkerPath);
+                    _log.Write("AI config: removed legacy version marker file");
+                } catch ( Exception ex ) {
+                    _log.Error("AI config: failed to delete legacy version marker", ex);
+                }
+            }
 
             // Step 11: success
             return new AiConfigApplyResult(true, "applied", manifest.Version, null);

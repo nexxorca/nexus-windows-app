@@ -132,6 +132,8 @@ public partial class App : Application {
 
     /// <summary>Must be invoked on the UI dispatcher (calls ShowDialog).</summary>
     public async Task TriggerAiConfigCheck() {
+        // AI config sync is postponed pending server-side kill switch on Nexus web.
+        return;
         if ( _aiConfigCheckInFlight ) return;
         if ( ! _config.IsLoggedIn ) return;
         if ( ! ClaudeCodeInstallProbe.IsInstalled() ) {
@@ -147,11 +149,12 @@ public partial class App : Application {
                 return;
             }
             var manifest = result.Data!;
-            var current = File.Exists(AiConfigPaths.VersionMarkerPath)
-                ? File.ReadAllText(AiConfigPaths.VersionMarkerPath).Trim()
+            var currentFingerprint = File.Exists(AiConfigPaths.FingerprintPath)
+                ? File.ReadAllText(AiConfigPaths.FingerprintPath).Trim()
                 : "";
-            if ( current == manifest.Version ) return;
-            var prompt = new AiConfigUpdatePromptWindow(current, manifest.Version);
+            var newFingerprint = ManifestFingerprint.Compute(manifest);
+            if ( currentFingerprint == newFingerprint ) return;
+            var prompt = new AiConfigUpdatePromptWindow(manifest.Version);
             if ( prompt.ShowDialog() != true ) return;
             var apply = await _aiConfigApplyService!.ApplyAsync(manifest);
             _activity.Log("ai_config_apply", $"{apply.Status}: {apply.Message}", apply.Success ? "ok" : "error");
