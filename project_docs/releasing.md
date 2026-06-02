@@ -47,14 +47,24 @@ Replace `1.0.1` with the new version number (semver: `MAJOR.MINOR.PATCH`).
 
 ## New User Installation
 
-`Setup.exe` is produced by `vpk pack` in `./Releases/` but is **not uploaded to the server**. To install on a new machine:
+`vpk pack` produces two install artifacts in `./Releases/`:
 
-1. After running `release.sh`, locate `./Releases/Setup.exe`
-2. Share it directly with the user (email, Teams, shared drive, etc.)
-3. The user runs `Setup.exe` — it installs to `%LocalAppData%\NexusApp\`
-4. On subsequent startups, the app auto-updates itself via the Nexus API
+- `NexusApp-win-Setup.exe` — full installer (~75 MB). Installs to `%LocalAppData%\NexusApp\` and registers for Velopack auto-updates.
+- `NexusApp-win-Portable.zip` — zipped self-contained build (~72 MB). Runs from anywhere; no installer needed. Use this when a dev can't run installers.
 
-> A hosted download link is tracked as a future improvement (`improvements.md`).
+### Hosted download link
+
+The installer is available at:
+
+**https://www.nexxor.ca/docs/nexus/NexusApp-win-Setup.exe**
+
+Send this URL to new devs — no manual file transfer required. Make sure to upload the latest `NexusApp-win-Setup.exe` from `./Releases/` to that location after each `release.sh` run so the link stays current.
+
+### Onboarding a new machine
+
+1. New dev downloads `NexusApp-win-Setup.exe` from the URL above (or, fallback, receives the file via Teams / shared drive)
+2. They run it — installer goes to `%LocalAppData%\NexusApp\`; portable extracts wherever
+3. On subsequent startups, the app auto-updates itself via the Nexus API (installer flavor only — portable does not self-update)
 
 ---
 

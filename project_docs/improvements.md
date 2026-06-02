@@ -1,9 +1,9 @@
 # Nexus Windows App — Improvements
 
-## Hosted Setup.exe Download
+## Automated Setup.exe Upload
 
-**Current**: `Setup.exe` (new-user installer) is produced locally by `vpk pack` but not uploaded to the server. New users receive it via manual distribution (email / shared drive).
-**Improvement**: Upload `Setup.exe` to the Nexus server alongside the `.nupkg` during `release.sh`. Add a `GET /api/v1/app/releases/setup/download` endpoint (or similar) so new users get a stable download link. The `is_latest` record would also store the Setup.exe filename.
+**Current**: `NexusApp-win-Setup.exe` is hosted manually at `https://www.nexxor.ca/docs/nexus/NexusApp-win-Setup.exe`. The PM must re-upload the file after each `release.sh` run to keep the link current.
+**Improvement**: Extend `release.sh` (or add a server endpoint) to upload the new `NexusApp-win-Setup.exe` automatically when a release is shipped, so the hosted link is always current without manual intervention.
 
 ---
 
