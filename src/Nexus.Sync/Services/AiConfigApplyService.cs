@@ -31,38 +31,24 @@ public class AiConfigApplyService {
         if ( manifest.ManagedRoots is null )
             throw new InvalidOperationException("ManagedRoots must be non-null — NexusApiClient.GetAiConfigManifest guarantees this.");
 
-        string? tempDir = null;
-
         try {
             var abortResult = PreFlight(manifest);
             if ( abortResult != null ) return abortResult;
 
             var claudeRootFull = Path.GetFullPath(AiConfigPaths.ClaudeRoot);
 
-            tempDir = Path.Combine(Path.GetTempPath(), $"nexus-ai-config-{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
-
-            await DownloadAndWrite(manifest, tempDir, claudeRootFull);
-
             WipeManagedRoots(manifest, claudeRootFull);
 
-            MoveFilesToFinalLocation(manifest, tempDir, claudeRootFull);
+            await DownloadToFinalLocation(manifest, claudeRootFull);
+
+            var warning = VerifyPlacedFiles(manifest);
 
             Finalize(manifest);
 
-            return new AiConfigApplyResult(true, AiConfigApplyStatuses.Applied, manifest.Version, null);
+            return new AiConfigApplyResult(true, AiConfigApplyStatuses.Applied, manifest.Version, warning);
 
         } finally {
             lock ( _lock ) { _running = false; }
-
-            if ( tempDir != null && Directory.Exists(tempDir) ) {
-                try {
-                    Directory.Delete(tempDir, recursive: true);
-                } catch ( Exception ex ) {
-                    _activity.Log("ai_config_apply", $"Cleanup: failed to delete tempDir {tempDir}: {ex.Message}", "warning");
-                    _log.Error($"AI config: failed to delete tempDir {tempDir}", ex);
-                }
-            }
         }
     }
 
@@ -196,25 +182,24 @@ public class AiConfigApplyService {
         _activity.Log("ai_config_apply", "Wipe: complete");
     }
 
-    // ─── Phase 3: Download and write to temp ─────────────────────────────────
+    // ─── Phase 3: Download directly to final location ─────────────────────────
 
-    private async Task DownloadAndWrite( AiConfigManifest manifest, string tempDir, string claudeRootFull ) {
+    private async Task DownloadToFinalLocation( AiConfigManifest manifest, string claudeRootFull ) {
         _activity.Log("ai_config_apply", $"Download: fetching {manifest.Files.Count} file(s)");
 
         foreach ( var f in manifest.Files ) {
             var osRelPath = f.Path.Replace('/', Path.DirectorySeparatorChar);
-            var destPath = Path.GetFullPath(Path.Combine(tempDir, osRelPath));
+            var targetFull = Path.GetFullPath(Path.Combine(AiConfigPaths.ClaudeRoot, osRelPath));
 
-            // Verify temp write target is under tempDir (path containment)
-            var tempDirFull = Path.GetFullPath(tempDir);
-            if ( ! AiConfigPaths.IsContainedIn(tempDirFull, destPath) ) {
-                throw new InvalidOperationException($"Download: '{f.Path}' resolves outside temp dir — aborting.");
+            // Final containment check before I/O
+            if ( ! AiConfigPaths.IsContainedIn(claudeRootFull, targetFull) ) {
+                throw new InvalidOperationException($"Download: '{f.Path}' resolves outside ~/.claude/ — aborting.");
             }
 
-            var parentDir = Path.GetDirectoryName(destPath);
+            var parentDir = Path.GetDirectoryName(targetFull);
             if ( parentDir != null ) Directory.CreateDirectory(parentDir);
 
-            using var fileStream = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            using var fileStream = new FileStream(targetFull, FileMode.Create, FileAccess.Write, FileShare.None);
             var downloadResult = await _api.DownloadAiConfigFile(f.Path, fileStream);
             if ( ! downloadResult.Success ) {
                 _activity.Log("ai_config_apply", $"Download: ABORT — {f.Path}: {downloadResult.Message}", "error");
@@ -223,45 +208,44 @@ public class AiConfigApplyService {
             }
         }
 
-        _activity.Log("ai_config_apply", "Download: all files fetched");
-
-        // SHA-256 verify — corruption check on the download
-        foreach ( var f in manifest.Files ) {
-            var osRelPath = f.Path.Replace('/', Path.DirectorySeparatorChar);
-            var filePath = Path.Combine(tempDir, osRelPath);
-            var actualSha = ComputeSha256(filePath);
-            if ( actualSha != f.Sha ) {
-                _activity.Log("ai_config_apply", $"Verify: ABORT — SHA mismatch for {f.Path}", "error");
-                _log.Error($"AI config SHA mismatch: {f.Path} expected={f.Sha} actual={actualSha}");
-                throw new InvalidOperationException($"SHA mismatch for {f.Path} — download may be corrupted");
-            }
-        }
-
-        _activity.Log("ai_config_apply", "Verify: all SHAs match");
+        _activity.Log("ai_config_apply", "Download: all files placed");
     }
 
-    // ─── Phase 3 (continued): Move files to final location ───────────────────
+    // ─── Phase 3 (post): Verify placed files ─────────────────────────────────
 
-    private void MoveFilesToFinalLocation( AiConfigManifest manifest, string tempDir, string claudeRootFull ) {
-        _activity.Log("ai_config_apply", $"Write: placing {manifest.Files.Count} file(s)");
+    private string? VerifyPlacedFiles( AiConfigManifest manifest ) {
+        var mismatches = new List<string>();
 
         foreach ( var f in manifest.Files ) {
             var osRelPath = f.Path.Replace('/', Path.DirectorySeparatorChar);
-            var srcPath = Path.Combine(tempDir, osRelPath);
-            var targetFull = Path.GetFullPath(Path.Combine(AiConfigPaths.ClaudeRoot, osRelPath));
-
-            // Final containment check before I/O
-            if ( ! AiConfigPaths.IsContainedIn(claudeRootFull, targetFull) ) {
-                throw new InvalidOperationException($"Write: '{f.Path}' resolves outside ~/.claude/ — aborting.");
+            var filePath = Path.GetFullPath(Path.Combine(AiConfigPaths.ClaudeRoot, osRelPath));
+            var actualSha = ComputeSha256(filePath);
+            if ( actualSha != f.Sha ) {
+                _activity.Log("ai_config_apply", $"Verify: SHA mismatch for {f.Path} (expected={f.Sha} actual={actualSha})", "warning");
+                _log.Write($"AI config SHA mismatch: {f.Path} expected={f.Sha} actual={actualSha}");
+                mismatches.Add(f.Path);
             }
-
-            var parentDir = Path.GetDirectoryName(targetFull);
-            if ( parentDir != null ) Directory.CreateDirectory(parentDir);
-
-            File.Move(srcPath, targetFull, overwrite: true);
         }
 
-        _activity.Log("ai_config_apply", "Write: complete");
+        if ( mismatches.Count == 0 ) {
+            _activity.Log("ai_config_apply", "Verify: all SHAs match");
+            return null;
+        }
+
+        return BuildMismatchMessage(mismatches);
+    }
+
+    private static string BuildMismatchMessage( List<string> mismatches ) {
+        var count = mismatches.Count;
+        string fileList;
+        if ( count <= 3 ) {
+            fileList = string.Join(", ", mismatches);
+        } else {
+            var first3 = string.Join(", ", mismatches.Take(3));
+            var remaining = count - 3;
+            fileList = $"{first3}, ... and {remaining} more";
+        }
+        return $"{count} file(s) placed but failed SHA verification: {fileList}";
     }
 
     // ─── Phase 4: Finalize ────────────────────────────────────────────────────

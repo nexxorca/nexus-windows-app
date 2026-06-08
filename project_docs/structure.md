@@ -1,6 +1,6 @@
 # Nexus Windows App - Structure
 
-> Last updated: 2026-06-08 | Project: `nexus-windows-app`
+> Last updated: 2026-06-08 (1.2.4) | Project: `nexus-windows-app`
 
 ## Purpose
 Native WPF tray application that synchronizes Claude Code session transcripts from `~/.claude/projects/` to the Nexus server via API, with Velopack auto-update support.
@@ -61,7 +61,7 @@ src/Nexus.Core/Services/
 
 src/Nexus.Sync/Services/
 ├── SyncEngine.cs                    # Main sync orchestrator — RunSync(), OnAuthFailed, event surface (IsRunning, LastSync, SyncStarted, SyncCompleted)
-├── AiConfigApplyService.cs          # AI config apply orchestrator — ApplyAsync(manifest) with four-phase flow: pre-flight gates → wipe → write → finalize; persists fingerprint marker
+├── AiConfigApplyService.cs          # AI config apply orchestrator — ApplyAsync(manifest) with three-phase flow: pre-flight gates → wipe → direct download + post-verify → finalize; persists fingerprint marker
 ├── ManifestFingerprint.cs           # Static helper — Compute(manifest) → sha256_hex of sorted "{path}|{sha}" pairs; trigger input for re-apply decision
 ├── StateManager.cs                  # Sync state persistence — HasChanged(), MarkUploaded(), MarkIgnored(), Save()
 ├── TranscriptScanner.cs             # Discovers .jsonl files in ~/.claude/projects/*/ — Scan()
@@ -160,7 +160,7 @@ The server declares which directories it manages via the manifest's `managed_roo
 - **4-hour timer**: piggy-backs the Velopack update timer; re-runs every 4 hours if the app stays open
 - **Fingerprint-driven**: triggers only if `ManifestFingerprint.Compute(manifest)` differs from the stored `ai-config-fingerprint` marker; catches both version bumps and server-side selection changes
 
-### Apply Pipeline (Four Phases)
+### Apply Pipeline (Three Phases)
 
 **Phase 1 — Pre-flight gates** (abort if any fails; log reason):
 - Is any symlink or junction under `~/.claude/managed_roots`? Refuse apply; reparse points are not compatible with wipe.
@@ -173,15 +173,12 @@ The server declares which directories it manages via the manifest's `managed_roo
   - If it resolves to a directory: recursively delete all contents.
   - If it resolves to a file: delete it.
 
-**Phase 3 — Write** (abort if any fails):
-- For each file in `manifest.files`:
-  - Download to a temp file (streamed via `ResponseHeadersRead`).
-  - Verify SHA-256 (corruption detection; not a trust anchor).
-  - Create parent directories and move temp file to final location.
-
-**Phase 4 — Finalize**:
+**Phase 3 — Download + post-verify + finalize**:
+- For each file in `manifest.files`: stream directly to final location via `ResponseHeadersRead` + `CopyToAsync`; create parent directories as needed. Abort on HTTP/disk failure.
+- After all files are placed: compute SHA-256 of each placed file and compare against manifest. Collect mismatches. Do NOT abort — files stay in place.
 - Persist new fingerprint marker at `%LOCALAPPDATA%\Nexus\ai-config-fingerprint`.
 - Log activity entry: applied manifest vN with M files across K managed roots.
+- Result: `Success = true` always (unless an exception was thrown during download). If any SHA mismatched: `Message` carries a readable warning listing the files (1–3 listed verbatim; 4+ truncated to first 3 with "... and N more"). Caller shows this as a Warning dialog (manual trigger) or logs it to activity log (auto-trigger).
 
 ### Failure Handling
 
