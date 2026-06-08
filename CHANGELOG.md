@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.3] - 2026-06-08
+
+### Fixed
+- Removed `ClaudeCodeInstallProbe` that gated all AI sync triggers on a path (`%LOCALAPPDATA%\Programs\claude\claude.exe`) that does not exist on VSCode-extension installs. The feature has been a no-op on the entire NEXXOR dev fleet since 1.2.0.
+
+### Changed
+- Manual "Check AI Config" button now shows a `MessageBox` for every visible outcome: already up to date, no snapshot available, apply success, apply failure, and unexpected error. Auto-triggers (login hook, 4h timer) remain silent except for the activity log.
+
 ## [1.2.2] - 2026-06-08
 
 ### Changed

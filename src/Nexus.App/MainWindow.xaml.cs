@@ -61,7 +61,7 @@ public partial class MainWindow : Window {
     private void btnActivityLog_Click( object sender, RoutedEventArgs e )      => _app.ShowActivityLogWindow();
     private void btnSettings_Click( object sender, RoutedEventArgs e )         => _app.ShowSettingsWindow();
     private void btnCheckUpdates_Click( object sender, RoutedEventArgs e )     => _app.TriggerUpdateCheck();
-    private void btnCheckAiConfig_Click( object sender, RoutedEventArgs e )    { _ = _app.TriggerAiConfigCheck(); }
+    private void btnCheckAiConfig_Click( object sender, RoutedEventArgs e )    { _ = _app.TriggerAiConfigCheck(isManualTrigger: true); }
     private void btnLogout_Click( object sender, RoutedEventArgs e )           { _ = _app.Logout(); }
 
     protected override void OnClosing( CancelEventArgs e ) {
