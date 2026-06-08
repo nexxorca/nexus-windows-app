@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.2.5] - 2026-06-08
+
+### Added
+- Backup-before-wipe — managed roots are copied to `~/.claude/backups/{timestamp}/` before each apply. Keeps last 5 backups; older ones are pruned automatically. If backup fails, the apply aborts (wipe does not proceed).
+
+### Fixed
+- AI Config Sync prompt and Velopack restart prompt no longer fire simultaneously. When a Velopack update is pending, AI sync defers until after the user restarts into the new version.
+
+### Removed
+- Post-write SHA verification check — HTTPS already establishes transport integrity; the manifest SHA is not a trust anchor (manifest and files come from the same server). Removed the verify step entirely; apply pipeline is now backup → wipe → download → done.
+
 ## [1.2.4] - 2026-06-08
 
 ### Changed

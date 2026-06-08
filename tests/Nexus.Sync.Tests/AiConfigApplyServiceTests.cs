@@ -4,8 +4,8 @@
 // constructor and clears it in Dispose so parallel test runs don't collide.
 //
 // FingerprintPath is NOT redirected — it writes to %LOCALAPPDATA%\Nexus\ai-config-fingerprint,
-// which is the real user dir. Tests that reach Phase 4 (Finalize) will write there. This is
-// acceptable: the fingerprint file is idempotent (overwrite) and isolated to the test run's output.
+// which is the real user dir. Tests that reach Finalize will write there. This is acceptable:
+// the fingerprint file is idempotent (overwrite) and isolated to the test run's output.
 // If this becomes a concern in a CI environment, add a FingerprintPathOverride seam similarly.
 
 using System.Security.Cryptography;
@@ -283,64 +283,126 @@ public class AiConfigApplyServiceTests : IDisposable {
     }
 
     [Fact]
-    public async Task ApplyAsync_ShaMismatchOnPlacedFile_SuccessWithWarning() {
-        // The fake API returns content whose SHA differs from what the manifest claims.
-        // New behavior: file IS placed, apply succeeds, but Message carries the warning.
-        var api = new FakeApiClient();
-        var actualContent = Encoding.UTF8.GetBytes(RandomContent());
-        var wrongSha = RandomSha(); // deliberate mismatch
-        api.AddFile("agents/dev/AGENT.md", actualContent);
+    public async Task ApplyAsync_BackupRunsBeforeWipe() {
+        // Pre-populate a managed root with content
+        var agentsDir = Path.Combine(_claudeRoot, "agents");
+        Directory.CreateDirectory(Path.Combine(agentsDir, "old-agent"));
+        File.WriteAllText(Path.Combine(agentsDir, "old-agent", "AGENT.md"), "old content");
 
-        var manifest = new AiConfigManifest(
-            Guid.NewGuid().ToString("N")[..8],
-            DateTime.UtcNow,
+        var (manifest, api) = BuildHappyManifest(
             new[] { "agents/" },
-            new List<AiConfigManifestFile> {
-                new("agents/dev/AGENT.md", wrongSha, actualContent.Length)
-            }
+            "agents/dev/AGENT.md"
         );
         var service = BuildService(api);
 
         var result = await service.ApplyAsync(manifest);
 
-        // Apply succeeded — file is in place
         Assert.True(result.Success);
-        Assert.Equal(AiConfigApplyStatuses.Applied, result.Status);
-        Assert.True(File.Exists(Path.Combine(_claudeRoot, "agents", "dev", "AGENT.md")));
 
-        // Warning message lists the mismatched file
-        Assert.NotNull(result.Message);
-        Assert.Contains("agents/dev/AGENT.md", result.Message!);
-        Assert.Contains("SHA verification", result.Message!);
+        // A timestamped backup directory must exist under the backups root
+        Assert.True(Directory.Exists(AiConfigPaths.BackupsRoot));
+        var backupDirs = Directory.EnumerateDirectories(AiConfigPaths.BackupsRoot).ToList();
+        Assert.Single(backupDirs);
+
+        // The backup must contain the pre-wipe content
+        var backupAgentsDir = Path.Combine(backupDirs[0], "agents", "old-agent", "AGENT.md");
+        Assert.True(File.Exists(backupAgentsDir));
+        Assert.Equal("old content", File.ReadAllText(backupAgentsDir));
     }
 
     [Fact]
-    public async Task ApplyAsync_MultipleShaMismatches_MessageListsFirst3ThenRemainder() {
-        // 5 files with wrong SHAs — message should show first 3 then "... and 2 more"
-        var api = new FakeApiClient();
-        var files = new List<AiConfigManifestFile>();
-        for ( var i = 1; i <= 5; i++ ) {
-            var content = Encoding.UTF8.GetBytes(RandomContent());
-            var path = $"agents/agent{i}/AGENT.md";
-            api.AddFile(path, content);
-            files.Add(new AiConfigManifestFile(path, RandomSha(), content.Length)); // wrong SHA
+    public async Task ApplyAsync_BackupFailure_AbortsBeforeWipe() {
+        // Pre-populate a managed root
+        var agentsDir = Path.Combine(_claudeRoot, "agents");
+        Directory.CreateDirectory(agentsDir);
+        var existingFile = Path.Combine(agentsDir, "existing.md");
+        File.WriteAllText(existingFile, "should survive");
+
+        // Use a service whose backup will fail by making BackupsRoot point to an existing FILE
+        // (creating a subdirectory inside a file path throws)
+        var fakeBackupsRoot = Path.Combine(_claudeRoot, "backups-blocker");
+        File.WriteAllText(fakeBackupsRoot, "I am a file, not a dir");
+
+        // Override the backups root by temporarily replacing ClaudeRoot so BackupsRoot resolves
+        // to something that will cause Directory.CreateDirectory to fail.
+        // Strategy: point ClaudeRootOverride to a subdirectory path that resolves BackupsRoot
+        // to a path we can block. Simpler: directly test via a subclass/wrapper is not possible
+        // without refactoring the seam. Instead we verify the behavior at a higher level by
+        // checking the managed root was NOT wiped.
+        //
+        // The canonical way to trigger a backup failure in the current design is to make the
+        // BackupsRoot path a file rather than a directory. We do this by creating a file at
+        // exactly _claudeRoot/backups before the apply runs.
+        var backupsPath = Path.Combine(_claudeRoot, "backups");
+        File.WriteAllText(backupsPath, "I am a file — Directory.CreateDirectory will throw");
+
+        var (manifest, api) = BuildHappyManifest(
+            new[] { "agents/" },
+            "agents/dev/AGENT.md"
+        );
+        var service = BuildService(api);
+
+        var result = await service.ApplyAsync(manifest);
+
+        // Apply must abort
+        Assert.False(result.Success);
+        Assert.Equal(AiConfigApplyStatuses.Aborted, result.Status);
+        Assert.NotNull(result.Message);
+        Assert.Contains("Backup failed", result.Message!);
+
+        // Wipe must NOT have run — original file still present
+        Assert.True(File.Exists(existingFile));
+        Assert.Equal("should survive", File.ReadAllText(existingFile));
+
+        // Download must NOT have run
+        Assert.False(api.AnyDownloadAttempted);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_BackupPrune_KeepsLast5() {
+        // Pre-populate a managed root so the apply creates a real backup dir
+        var agentsDir = Path.Combine(_claudeRoot, "agents");
+        Directory.CreateDirectory(agentsDir);
+        File.WriteAllText(Path.Combine(agentsDir, "existing.md"), "existing");
+
+        // Pre-seed 7 timestamped backup dirs (older than today)
+        var backupsRoot = AiConfigPaths.BackupsRoot;
+        Directory.CreateDirectory(backupsRoot);
+        var preSeeded = new[] {
+            "2026-01-01-000001",
+            "2026-01-01-000002",
+            "2026-01-01-000003",
+            "2026-01-01-000004",
+            "2026-01-01-000005",
+            "2026-01-01-000006",
+            "2026-01-01-000007",
+        };
+        foreach ( var name in preSeeded ) {
+            Directory.CreateDirectory(Path.Combine(backupsRoot, name));
         }
 
-        var manifest = new AiConfigManifest(
-            Guid.NewGuid().ToString("N")[..8],
-            DateTime.UtcNow,
+        var (manifest, api) = BuildHappyManifest(
             new[] { "agents/" },
-            files
+            "agents/dev/AGENT.md"
         );
         var service = BuildService(api);
 
         var result = await service.ApplyAsync(manifest);
 
         Assert.True(result.Success);
-        Assert.Equal(AiConfigApplyStatuses.Applied, result.Status);
-        Assert.NotNull(result.Message);
-        Assert.Contains("5 file(s)", result.Message!);
-        Assert.Contains("... and 2 more", result.Message!);
+
+        // Total dirs = 7 pre-seeded + 1 created by this apply = 8; after prune must be 5
+        var remaining = Directory.EnumerateDirectories(backupsRoot).ToList();
+        Assert.Equal(5, remaining.Count);
+
+        // The 5 kept are the 5 newest: the apply dir (today's date) + the 4 most recent pre-seeded
+        var names = remaining.Select(Path.GetFileName).OrderByDescending(n => n).ToList();
+        // names[0] is the apply dir — starts with today's date (greater than 2026-01-01)
+        Assert.DoesNotContain("2026-01-01-", names[0]!); // apply dir is NOT a pre-seeded one
+        // The 3 oldest pre-seeded dirs must have been deleted
+        Assert.DoesNotContain("2026-01-01-000001", names!);
+        Assert.DoesNotContain("2026-01-01-000002", names!);
+        Assert.DoesNotContain("2026-01-01-000003", names!);
     }
 
     [Fact]
