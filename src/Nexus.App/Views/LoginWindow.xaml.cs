@@ -41,6 +41,19 @@ public partial class LoginWindow : Window {
             return;
         }
 
+        if ( ! Uri.TryCreate(url, UriKind.Absolute, out var parsedUrl) ) {
+            ShowError("Invalid URL. Enter a valid address (e.g. https://nexus.example.com).");
+            return;
+        }
+        var isHttps = parsedUrl.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase);
+        var isLocalHttp = parsedUrl.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase)
+            && ( parsedUrl.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                 || parsedUrl.Host.Equals("127.0.0.1", StringComparison.Ordinal) );
+        if ( ! isHttps && ! isLocalHttp ) {
+            ShowError("URL must use HTTPS. Local development may use http://localhost or http://127.0.0.1.");
+            return;
+        }
+
         var result = await _api.Login(url, email, password);
 
         if ( ! result.Success ) {

@@ -116,7 +116,7 @@ public class TrayIconManager : IDisposable {
 
         if ( _config.IsLoggedIn ) {
             var logout = new MenuItem { Header = "Logout" };
-            logout.Click += ( s, e ) => _app.Logout();
+            logout.Click += ( s, e ) => _ = _app.Logout();
             menu.Items.Add(logout);
         }
 

@@ -1,22 +1,17 @@
 // All paths use forward slashes; convert at filesystem boundary.
 namespace Nexus.Sync.Models;
 
-using System.IO;
+public static class AiConfigPaths {
+    // Test seam: tests/Nexus.Sync.Tests sets this to a temp dir so tests never touch the real ~/.claude
+    internal static string? ClaudeRootOverride;
 
-public static class AiConfigPaths
-{
-    public static readonly string ClaudeRoot =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
+    public static string ClaudeRoot =>
+        ClaudeRootOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
 
+    /// <summary>Legacy backup tree created by 1.2.0/1.2.1. Retained here only for the one-shot
+    /// startup cleanup in App.xaml.cs (Step 2.3). Remove in 1.3.0 once all installs are clean.</summary>
     public static readonly string BackupsRoot =
         Path.Combine(ClaudeRoot, "backups");
-
-    public static readonly string VersionMarkerPath =
-        Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Nexus",
-            "ai-config-version"
-        );
 
     public static readonly string FingerprintPath =
         Path.Combine(
@@ -25,83 +20,21 @@ public static class AiConfigPaths
             "ai-config-fingerprint"
         );
 
-    public static readonly IReadOnlyList<string> ExclusionList = new[]
-    {
-        "projects/",
-        "settings.local.json",
-        ".credentials*",
-        "mcp-needs-auth-cache.json",
-        "backups/",
-        "cache/",
-        "sessions/",
-        "plans/",
-        "plugins/",
-        "telemetry/",
-        "todos/",
-        "*.log",
-        "shell-snapshots/",
-        "statsig/",
-        "ide/",
-        "paste-cache/",
-        "debug/",
-        "file-history/",
-        "session-env/",
-        "*.tmp",
-        "*.rollback.tmp",
-    };
+    /// <summary>Returns true when <paramref name="targetFull"/> is located inside
+    /// <paramref name="rootFull"/>. Both parameters MUST already be canonicalized via
+    /// <see cref="Path.GetFullPath"/> before calling — this method does NOT canonicalize them.</summary>
+    public static bool IsContainedIn( string rootFull, string targetFull ) {
+        return targetFull.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    }
 
-    public static bool IsExcluded(string relativePath)
-    {
-        relativePath = relativePath.Replace('\\', '/');
+    /// <summary>Returns true if any file-system entry under <paramref name="root"/> is a reparse
+    /// point (symlink or junction). Returns false when the root does not exist.</summary>
+    public static bool ContainsReparsePoint( string root ) {
+        if ( ! Directory.Exists(root) ) return false;
 
-        foreach ( var entry in ExclusionList )
-        {
-            if ( entry.EndsWith('/') )
-            {
-                // Prefix match: "projects/" matches "projects/" or "projects/foo/bar.md"
-                if ( relativePath == entry || relativePath.StartsWith(entry) )
-                    return true;
-            }
-            else if ( entry.Contains('*') )
-            {
-                // Glob match: split on '*' and check StartsWith / EndsWith / both
-                var parts = entry.Split('*');
-                if ( parts.Length == 2 )
-                {
-                    var prefix = parts[0];
-                    var suffix = parts[1];
-
-                    var fileName = relativePath.Contains('/')
-                        ? relativePath[(relativePath.LastIndexOf('/') + 1)..]
-                        : relativePath;
-
-                    if ( prefix.Length > 0 && suffix.Length > 0 )
-                    {
-                        if ( fileName.StartsWith(prefix) && fileName.EndsWith(suffix) )
-                            return true;
-                    }
-                    else if ( prefix.Length > 0 )
-                    {
-                        if ( fileName.StartsWith(prefix) )
-                            return true;
-                    }
-                    else if ( suffix.Length > 0 )
-                    {
-                        if ( fileName.EndsWith(suffix) )
-                            return true;
-                    }
-                }
-            }
-            else
-            {
-                // Exact match against file name only (no directory component in entry)
-                var fileName = relativePath.Contains('/')
-                    ? relativePath[(relativePath.LastIndexOf('/') + 1)..]
-                    : relativePath;
-
-                if ( fileName == entry )
-                    return true;
-            }
+        foreach ( var entry in Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories) ) {
+            var attrs = File.GetAttributes(entry);
+            if ( (attrs & FileAttributes.ReparsePoint) != 0 ) return true;
         }
 
         return false;

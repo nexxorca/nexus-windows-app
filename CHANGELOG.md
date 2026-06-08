@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.2.2] - 2026-06-08
+
+### Changed
+- AI Config Sync apply pipeline replaced with wipe-and-replace — deletes managed roots entirely, then writes selected files from manifest
+- Manifest schema gains `managed_roots: string[]` declaring the scope of server-managed directories (e.g., `agents/`, `conventions/`)
+- `AiConfigApplyResult.Status` converted from string to enum `AiConfigApplyStatuses` (values: `applied`, `aborted`, `skipped_no_snapshot`, `skipped_no_install`)
+
+### Security
+- Path containment checks at all I/O sites — ensures write targets fall within declared `managed_roots`
+- Manifest path validation rejects traversal sequences (`..`), absolute paths, control chars, colons, and embedded backslashes
+- Symlink and junction pre-flight refusal — apply aborts if any reparse point exists under managed roots
+- Claude Code running probe — apply defers if `claude.exe` is running; user prompted to close it and retry
+- HTTPS enforcement in `NexusApiClient.Configure()` and `LoginWindow` URL field (localhost exception for dev)
+- Exception boundary around `TriggerAiConfigCheck` — outer try/catch prevents apply failures from crashing the dispatcher or vanishing silently
+
+### Removed
+- Backup ladder (`~/.claude/backups/`) — no longer created or retained; legacy backups cleaned up automatically on first 1.2.2 launch
+- Rollback machinery and `rolled_back` status
+- Perfect-fit delete logic and `ExclusionList`
+- Legacy `ai-config-version` marker (one-shot cleanup on startup)
+
+### Tests
+- Introduced `INexusApiClient` interface for integration test seams
+- Added `AiConfigApplyServiceTests.cs` (10 tests) — wipe-and-replace pipeline, path validation, symlink pre-flight, partial failure idempotence
+- Added `AiConfigPathsTests.cs` (9 tests) — path containment, reparse-point detection, manifest entry validation
+- Added `NexusApiClientAiConfigTests.cs` (14 tests) — manifest fetch with/without `managed_roots`, 404/401/timeout, JSON parsing, HTTPS validation
+- Extended `ManifestFingerprintTests.cs` — Unicode paths, case sensitivity, single-file manifests, duplicate entries; replaced brittle constant-pinned test with behavioral assertions
+- Total: 57 tests passing
+
+### Fixed
+- `Logout()` converted from `async void` to `async Task` — fire-and-forget intent now explicit at call sites
+
 ## [1.2.1] - 2026-06-02
 
 ### Added
