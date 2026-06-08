@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-
 using Nexus.Core.Models;
 using Nexus.Core.Services;
 using Nexus.Sync.Models;
@@ -37,15 +35,37 @@ public class AiConfigApplyService {
 
             var claudeRootFull = Path.GetFullPath(AiConfigPaths.ClaudeRoot);
 
+            // Phase 2: Backup — must succeed before wipe proceeds
+            string? backupDir;
+            try {
+                backupDir = BackupManagedRoots(manifest, claudeRootFull);
+                if ( backupDir != null ) {
+                    _activity.Log("ai_config_apply", $"Backup: created {backupDir} with {manifest.ManagedRoots!.Length} managed root(s)");
+                } else {
+                    _activity.Log("ai_config_apply", "Backup: nothing to back up (managed roots absent on disk)");
+                }
+            } catch ( Exception ex ) {
+                _log.Error($"AI config backup failed: {ex.Message}");
+                return new AiConfigApplyResult(false, AiConfigApplyStatuses.Aborted, null, $"Backup failed: {ex.Message}");
+            }
+
             WipeManagedRoots(manifest, claudeRootFull);
 
             await DownloadToFinalLocation(manifest, claudeRootFull);
 
-            var warning = VerifyPlacedFiles(manifest);
-
             Finalize(manifest);
 
-            return new AiConfigApplyResult(true, AiConfigApplyStatuses.Applied, manifest.Version, warning);
+            // Prune old backups after successful apply — errors do not fail the apply
+            try {
+                var pruned = PruneOldBackups();
+                if ( pruned > 0 ) {
+                    _activity.Log("ai_config_apply", $"Backup prune: kept 5 most recent, removed {pruned}");
+                }
+            } catch ( Exception ex ) {
+                _log.Error($"AI config backup prune failed (non-fatal): {ex.Message}");
+            }
+
+            return new AiConfigApplyResult(true, AiConfigApplyStatuses.Applied, manifest.Version, null);
 
         } finally {
             lock ( _lock ) { _running = false; }
@@ -142,7 +162,50 @@ public class AiConfigApplyService {
             || AiConfigPaths.IsContainedIn(claudeRootFull, targetFull);
     }
 
-    // ─── Phase 2: Wipe managed roots ─────────────────────────────────────────
+    // ─── Phase 2: Backup ──────────────────────────────────────────────────────
+
+    /// <summary>Copies each managed root that exists on disk into a timestamped backup directory.
+    /// Returns the backup directory path, or null if nothing existed to back up.</summary>
+    private string? BackupManagedRoots( AiConfigManifest manifest, string claudeRootFull ) {
+        var timestamp = DateTime.UtcNow.ToString("yyyy-MM-dd-HHmmss");
+        var backupDir = Path.Combine(AiConfigPaths.BackupsRoot, timestamp);
+        var backedUpCount = 0;
+
+        foreach ( var root in manifest.ManagedRoots! ) {
+            var rootNormalized = root.TrimEnd('/', '\\');
+            var rootFull = Path.GetFullPath(Path.Combine(AiConfigPaths.ClaudeRoot, rootNormalized));
+
+            if ( ! IsContainedInClaudeRoot(claudeRootFull, rootFull) ) continue; // already guarded by pre-flight
+
+            var destPath = Path.Combine(backupDir, rootNormalized);
+
+            if ( Directory.Exists(rootFull) ) {
+                CopyDirectoryTree(rootFull, destPath);
+                backedUpCount++;
+            } else if ( File.Exists(rootFull) ) {
+                var destParent = Path.GetDirectoryName(destPath);
+                if ( destParent != null ) Directory.CreateDirectory(destParent);
+                File.Copy(rootFull, destPath, overwrite: true);
+                backedUpCount++;
+            }
+            // Skip if neither exists — nothing to back up for this root
+        }
+
+        return backedUpCount > 0 ? backupDir : null;
+    }
+
+    private static void CopyDirectoryTree( string sourceDir, string destDir ) {
+        Directory.CreateDirectory(destDir);
+        foreach ( var file in Directory.EnumerateFiles(sourceDir, "*", SearchOption.AllDirectories) ) {
+            var relative = Path.GetRelativePath(sourceDir, file);
+            var dest = Path.Combine(destDir, relative);
+            var destParent = Path.GetDirectoryName(dest);
+            if ( destParent != null ) Directory.CreateDirectory(destParent);
+            File.Copy(file, dest, overwrite: true);
+        }
+    }
+
+    // ─── Phase 3: Wipe managed roots ─────────────────────────────────────────
 
     private void WipeManagedRoots( AiConfigManifest manifest, string claudeRootFull ) {
         _activity.Log("ai_config_apply", $"Wipe: clearing {manifest.ManagedRoots!.Length} managed root(s)");
@@ -182,7 +245,7 @@ public class AiConfigApplyService {
         _activity.Log("ai_config_apply", "Wipe: complete");
     }
 
-    // ─── Phase 3: Download directly to final location ─────────────────────────
+    // ─── Phase 4: Download directly to final location ─────────────────────────
 
     private async Task DownloadToFinalLocation( AiConfigManifest manifest, string claudeRootFull ) {
         _activity.Log("ai_config_apply", $"Download: fetching {manifest.Files.Count} file(s)");
@@ -211,44 +274,7 @@ public class AiConfigApplyService {
         _activity.Log("ai_config_apply", "Download: all files placed");
     }
 
-    // ─── Phase 3 (post): Verify placed files ─────────────────────────────────
-
-    private string? VerifyPlacedFiles( AiConfigManifest manifest ) {
-        var mismatches = new List<string>();
-
-        foreach ( var f in manifest.Files ) {
-            var osRelPath = f.Path.Replace('/', Path.DirectorySeparatorChar);
-            var filePath = Path.GetFullPath(Path.Combine(AiConfigPaths.ClaudeRoot, osRelPath));
-            var actualSha = ComputeSha256(filePath);
-            if ( actualSha != f.Sha ) {
-                _activity.Log("ai_config_apply", $"Verify: SHA mismatch for {f.Path} (expected={f.Sha} actual={actualSha})", "warning");
-                _log.Write($"AI config SHA mismatch: {f.Path} expected={f.Sha} actual={actualSha}");
-                mismatches.Add(f.Path);
-            }
-        }
-
-        if ( mismatches.Count == 0 ) {
-            _activity.Log("ai_config_apply", "Verify: all SHAs match");
-            return null;
-        }
-
-        return BuildMismatchMessage(mismatches);
-    }
-
-    private static string BuildMismatchMessage( List<string> mismatches ) {
-        var count = mismatches.Count;
-        string fileList;
-        if ( count <= 3 ) {
-            fileList = string.Join(", ", mismatches);
-        } else {
-            var first3 = string.Join(", ", mismatches.Take(3));
-            var remaining = count - 3;
-            fileList = $"{first3}, ... and {remaining} more";
-        }
-        return $"{count} file(s) placed but failed SHA verification: {fileList}";
-    }
-
-    // ─── Phase 4: Finalize ────────────────────────────────────────────────────
+    // ─── Phase 5: Finalize ────────────────────────────────────────────────────
 
     private void Finalize( AiConfigManifest manifest ) {
         var fingerprint = ManifestFingerprint.Compute(manifest);
@@ -258,12 +284,33 @@ public class AiConfigApplyService {
         _activity.Log("ai_config_apply", $"Applied version {manifest.Version} — {manifest.Files.Count} file(s) in {manifest.ManagedRoots!.Length} managed root(s)");
     }
 
-    // ─── Helpers ──────────────────────────────────────────────────────────────
+    // ─── Backup pruning ───────────────────────────────────────────────────────
 
-    private static string ComputeSha256( string filePath ) {
-        using var sha = SHA256.Create();
-        using var stream = File.OpenRead(filePath);
-        var hash = sha.ComputeHash(stream);
-        return Convert.ToHexString(hash).ToLowerInvariant();
+    /// <summary>Deletes all but the 5 most recent timestamped backup directories.
+    /// Returns the number of directories deleted.</summary>
+    private static int PruneOldBackups() {
+        if ( ! Directory.Exists(AiConfigPaths.BackupsRoot) ) return 0;
+
+        var dirs = Directory.EnumerateDirectories(AiConfigPaths.BackupsRoot)
+            .Where(d => IsTimestampDirName(Path.GetFileName(d)))
+            .OrderByDescending(d => Path.GetFileName(d)) // lexicographic descending = newest first
+            .ToList();
+
+        if ( dirs.Count <= 5 ) return 0;
+
+        var toDelete = dirs.Skip(5).ToList();
+        foreach ( var dir in toDelete ) {
+            Directory.Delete(dir, recursive: true);
+        }
+        return toDelete.Count;
+    }
+
+    private static bool IsTimestampDirName( string name ) {
+        // Matches "yyyy-MM-dd-HHmmss" — 17 chars, digit-and-dash only
+        if ( name.Length != 17 ) return false;
+        foreach ( var c in name ) {
+            if ( ! char.IsDigit(c) && c != '-' ) return false;
+        }
+        return true;
     }
 }

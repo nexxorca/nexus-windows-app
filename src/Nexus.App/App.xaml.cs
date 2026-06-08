@@ -23,6 +23,7 @@ public partial class App : Application {
     private SyncEngine _syncEngine = null!;
     private AiConfigApplyService? _aiConfigApplyService;
     private bool _aiConfigCheckInFlight;
+    private UpdateInfo? _pendingVelopackUpdate;
     private MainWindow? _mainWindow;
 
     [STAThread]
@@ -113,6 +114,7 @@ public partial class App : Application {
                 await manager.DownloadUpdatesAsync(updateInfo);
 
                 Dispatcher.Invoke(() => {
+                    _pendingVelopackUpdate = updateInfo;
                     var newVersion = updateInfo.TargetFullRelease.Version.ToString();
                     var result = MessageBox.Show(
                         $"Version {newVersion} is available. Restart now to update?",
@@ -122,6 +124,8 @@ public partial class App : Application {
                     );
                     if ( result == MessageBoxResult.Yes ) {
                         manager.ApplyUpdatesAndRestart(updateInfo);
+                    } else {
+                        _pendingVelopackUpdate = null;
                     }
                 });
             } catch {
@@ -134,6 +138,18 @@ public partial class App : Application {
     public async Task TriggerAiConfigCheck( bool isManualTrigger = false ) {
         if ( _aiConfigCheckInFlight ) return;
         if ( ! _config.IsLoggedIn ) return;
+        if ( _pendingVelopackUpdate is not null ) {
+            if ( isManualTrigger ) {
+                MessageBox.Show(
+                    "App update available — please restart to update, then re-check AI Config.",
+                    "AI Config Sync",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            } else {
+                _log.Write("TriggerAiConfigCheck: skipped — Velopack update pending");
+            }
+            return;
+        }
         _aiConfigCheckInFlight = true;
         try {
             try {
@@ -187,12 +203,6 @@ public partial class App : Application {
                             "AI Config Sync",
                             MessageBoxButton.OK,
                             MessageBoxImage.Error);
-                    } else if ( apply.Message != null ) {
-                        MessageBox.Show(
-                            apply.Message,
-                            "AI Config Sync",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Warning);
                     } else {
                         MessageBox.Show(
                             $"AI Config applied — version {apply.Version}, {manifest.Files.Count} files updated.",
@@ -200,8 +210,6 @@ public partial class App : Application {
                             MessageBoxButton.OK,
                             MessageBoxImage.Information);
                     }
-                } else if ( apply.Success && apply.Message != null ) {
-                    _activity.Log("ai_config_apply", $"SHA warning: {apply.Message}", "warning");
                 }
             } catch ( Exception ex ) {
                 _activity.Log("ai_config_check", $"unexpected error: {ex.Message}", "error");
@@ -266,16 +274,6 @@ public partial class App : Application {
     // One-shot legacy cleanup for artifacts left by 1.2.0/1.2.1.
     // Runs before any sync or AI-config trigger can fire. Never throws — must not block startup.
     private static void CleanupLegacyAiConfigArtifacts() {
-        // Delete the legacy backup tree (~/.claude/backups/) created by the old surgical-apply pipeline.
-        // Idempotent — safe to run on every startup once the directory is gone.
-        if ( Directory.Exists(AiConfigPaths.BackupsRoot) ) {
-            try {
-                Directory.Delete(AiConfigPaths.BackupsRoot, recursive: true);
-            } catch {
-                // Best-effort — startup must not be blocked
-            }
-        }
-
         // Delete the legacy ai-config-version marker file written by the pre-fingerprint pipeline.
         // Path is hardcoded here because AiConfigPaths.VersionMarkerPath was removed in 1.2.2.
         var versionMarker = Path.Combine(

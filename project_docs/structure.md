@@ -1,6 +1,6 @@
 # Nexus Windows App - Structure
 
-> Last updated: 2026-06-08 (1.2.4) | Project: `nexus-windows-app`
+> Last updated: 2026-06-08 (1.2.5 backup+SHA) | Project: `nexus-windows-app`
 
 ## Purpose
 Native WPF tray application that synchronizes Claude Code session transcripts from `~/.claude/projects/` to the Nexus server via API, with Velopack auto-update support.
@@ -39,7 +39,7 @@ src/Nexus.Sync/Models/
 ├── SyncState.cs                     # Files dict<string, FileState> — upload tracking; FileState: Size, Timestamp, Status
 ├── SyncResult.cs                    # Uploaded, Skipped, ParseSkipped, Errors, CompletedAt, Status — immutable result emitted by SyncEngine.SyncCompleted
 ├── AiConfigApplyResult.cs           # Success, Status (enum: Applied, Aborted, SkippedNoSnapshot, SkippedNoInstall), Version?, Message?
-└── AiConfigPaths.cs                 # Constants: ClaudeRoot, BackupsRoot, FingerprintPath; helpers: IsContainedIn(), ContainsReparsePoint()
+└── AiConfigPaths.cs                 # Properties: ClaudeRoot, BackupsRoot (live backup root), FingerprintPath; helpers: IsContainedIn(), ContainsReparsePoint()
 ```
 
 ### AppConfig Details
@@ -61,7 +61,7 @@ src/Nexus.Core/Services/
 
 src/Nexus.Sync/Services/
 ├── SyncEngine.cs                    # Main sync orchestrator — RunSync(), OnAuthFailed, event surface (IsRunning, LastSync, SyncStarted, SyncCompleted)
-├── AiConfigApplyService.cs          # AI config apply orchestrator — ApplyAsync(manifest) with three-phase flow: pre-flight gates → wipe → direct download + post-verify → finalize; persists fingerprint marker
+├── AiConfigApplyService.cs          # AI config apply orchestrator — ApplyAsync(manifest) with four-phase flow: pre-flight gates → backup → wipe → direct download → finalize; persists fingerprint marker; prunes backups to 5 most recent
 ├── ManifestFingerprint.cs           # Static helper — Compute(manifest) → sha256_hex of sorted "{path}|{sha}" pairs; trigger input for re-apply decision
 ├── StateManager.cs                  # Sync state persistence — HasChanged(), MarkUploaded(), MarkIgnored(), Save()
 ├── TranscriptScanner.cs             # Discovers .jsonl files in ~/.claude/projects/*/ — Scan()
@@ -124,6 +124,7 @@ src/Nexus.App/
 - On startup (if logged in) + after login + every 4 hours via `DispatcherTimer`
 - Velopack `UpdateManager` fetches `{baseUrl}/api/v1/app/releases` → `releases.win.json`
 - AI Config Sync triggers on: login (after Velopack) + manual "Check AI Config" button + 4h timer (piggy-backs Velopack timer); uses `TriggerAiConfigCheck()` shared entry point with popup-stacking guard
+- **Velopack takes precedence**: when a Velopack update is downloaded and the user is prompted to restart, `_pendingVelopackUpdate` is set on `App`. `TriggerAiConfigCheck` returns immediately — silently for auto-triggers, with an informational `MessageBox` for manual triggers. The field is cleared if the user declines the restart; if they accept, the app restarts and the next launch's normal startup sequence fires AI sync naturally.
 
 ---
 
@@ -138,7 +139,8 @@ src/Nexus.App/
 └── activity.log                     # JSONL activity entries (flushed on sync complete + exit)
 
 %USERPROFILE%/.claude/
-└── [other config files]             # Agents, skills, conventions, hooks, settings.json — managed and synced from server
+├── [managed config files]           # Agents, skills, conventions, hooks, settings.json — managed and synced from server
+└── backups/{yyyy-MM-dd-HHmmss}/     # Pre-wipe snapshots; 5 most recent kept; older ones pruned after each apply
 ```
 
 ---
@@ -160,7 +162,7 @@ The server declares which directories it manages via the manifest's `managed_roo
 - **4-hour timer**: piggy-backs the Velopack update timer; re-runs every 4 hours if the app stays open
 - **Fingerprint-driven**: triggers only if `ManifestFingerprint.Compute(manifest)` differs from the stored `ai-config-fingerprint` marker; catches both version bumps and server-side selection changes
 
-### Apply Pipeline (Three Phases)
+### Apply Pipeline (Four Phases)
 
 **Phase 1 — Pre-flight gates** (abort if any fails; log reason):
 - Is any symlink or junction under `~/.claude/managed_roots`? Refuse apply; reparse points are not compatible with wipe.
@@ -168,24 +170,32 @@ The server declares which directories it manages via the manifest's `managed_roo
 - Validate each `managed_roots` entry: relative path, no `..`, no absolute, no `:`, no control chars, no embedded `\`, ≤ 260 chars.
 - Validate each file path in `files[]`: must fall within at least one `managed_roots` entry; same character/traversal rules.
 
-**Phase 2 — Wipe** (idempotent; skip if path doesn't exist):
+**Phase 2 — Backup** (abort if backup fails; wipe MUST NOT run if backup throws):
+- For each entry in `manifest.managed_roots`:
+  - If it resolves to a directory: copy the full tree into `~/.claude/backups/{yyyy-MM-dd-HHmmss}/{root}/`.
+  - If it resolves to a file: copy it to `~/.claude/backups/{yyyy-MM-dd-HHmmss}/{root}`.
+  - Skip if neither exists on disk (nothing to back up for that root).
+- If any backup I/O throws (disk full, permissions), return `Aborted` — do not proceed to wipe.
+- After successful apply: prune `~/.claude/backups/` to keep the 5 most recent timestamped directories; prune errors are logged but do not fail the apply.
+
+**Phase 3 — Wipe** (idempotent; skip if path doesn't exist):
 - For each entry in `manifest.managed_roots`:
   - If it resolves to a directory: recursively delete all contents.
   - If it resolves to a file: delete it.
 
-**Phase 3 — Download + post-verify + finalize**:
+**Phase 4 — Download + finalize**:
 - For each file in `manifest.files`: stream directly to final location via `ResponseHeadersRead` + `CopyToAsync`; create parent directories as needed. Abort on HTTP/disk failure.
-- After all files are placed: compute SHA-256 of each placed file and compare against manifest. Collect mismatches. Do NOT abort — files stay in place.
 - Persist new fingerprint marker at `%LOCALAPPDATA%\Nexus\ai-config-fingerprint`.
 - Log activity entry: applied manifest vN with M files across K managed roots.
-- Result: `Success = true` always (unless an exception was thrown during download). If any SHA mismatched: `Message` carries a readable warning listing the files (1–3 listed verbatim; 4+ truncated to first 3 with "... and N more"). Caller shows this as a Warning dialog (manual trigger) or logs it to activity log (auto-trigger).
+- Result: `Success = true, Message = null` on clean apply.
 
 ### Failure Handling
 
-No backups, no rollback, no atomicity guarantee beyond "either it worked or it didn't." If any phase throws:
+If any phase throws (after backup completes):
 - Exception is caught at the `TriggerAiConfigCheck` boundary (outer try/catch in `App.xaml.cs`).
 - Failure is logged to activity log and debug.log.
 - Dev clicks "Check AI Config" to retry — the next apply re-wipes and re-downloads from scratch (idempotent).
+- The most recent backup in `~/.claude/backups/` contains the pre-wipe state for manual recovery.
 
 ### Manifest Schema
 

@@ -8,10 +8,9 @@ public static class AiConfigPaths {
     public static string ClaudeRoot =>
         ClaudeRootOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
 
-    /// <summary>Legacy backup tree created by 1.2.0/1.2.1. Retained here only for the one-shot
-    /// startup cleanup in App.xaml.cs (Step 2.3). Remove in 1.3.0 once all installs are clean.</summary>
-    public static readonly string BackupsRoot =
-        Path.Combine(ClaudeRoot, "backups");
+    /// <summary>Timestamped backup directory root. Each apply writes a subdirectory
+    /// named "yyyy-MM-dd-HHmmss"; the 5 most recent are kept and older ones are pruned.</summary>
+    public static string BackupsRoot => Path.Combine(ClaudeRoot, "backups");
 
     public static readonly string FingerprintPath =
         Path.Combine(
