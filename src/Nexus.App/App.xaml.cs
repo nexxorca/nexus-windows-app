@@ -187,6 +187,12 @@ public partial class App : Application {
                             "AI Config Sync",
                             MessageBoxButton.OK,
                             MessageBoxImage.Error);
+                    } else if ( apply.Message != null ) {
+                        MessageBox.Show(
+                            apply.Message,
+                            "AI Config Sync",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
                     } else {
                         MessageBox.Show(
                             $"AI Config applied — version {apply.Version}, {manifest.Files.Count} files updated.",
@@ -194,6 +200,8 @@ public partial class App : Application {
                             MessageBoxButton.OK,
                             MessageBoxImage.Information);
                     }
+                } else if ( apply.Success && apply.Message != null ) {
+                    _activity.Log("ai_config_apply", $"SHA warning: {apply.Message}", "warning");
                 }
             } catch ( Exception ex ) {
                 _activity.Log("ai_config_check", $"unexpected error: {ex.Message}", "error");

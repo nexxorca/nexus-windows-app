@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.4] - 2026-06-08
+
+### Changed
+- AI Config Sync apply pipeline simplified — files now download directly to final location (no temp-then-move), SHA verification happens AFTER placement as a diagnostic warning instead of a pre-write gate. Files always get placed; mismatches are reported to the user but don't block the apply.
+
+### Removed
+- Temp-dir download staging and pre-write SHA gate that blocked apply on benign manifest/file drift (line endings, stale deploys, etc.).
+
 ## [1.2.3] - 2026-06-08
 
 ### Fixed

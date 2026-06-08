@@ -96,6 +96,7 @@ public class AiConfigApplyServiceTests : IDisposable {
 
         Assert.True(result.Success);
         Assert.Equal(AiConfigApplyStatuses.Applied, result.Status);
+        Assert.Null(result.Message);
         Assert.True(File.Exists(Path.Combine(_claudeRoot, "agents", "dev", "AGENT.md")));
         Assert.True(File.Exists(Path.Combine(_claudeRoot, "agents", "tech-lead", "AGENT.md")));
         Assert.True(File.Exists(Path.Combine(_claudeRoot, "conventions", "main.md")));
@@ -282,8 +283,9 @@ public class AiConfigApplyServiceTests : IDisposable {
     }
 
     [Fact]
-    public async Task ApplyAsync_ShaMismatchOnDownload_ThrowsAndNoFinalWrite() {
+    public async Task ApplyAsync_ShaMismatchOnPlacedFile_SuccessWithWarning() {
         // The fake API returns content whose SHA differs from what the manifest claims.
+        // New behavior: file IS placed, apply succeeds, but Message carries the warning.
         var api = new FakeApiClient();
         var actualContent = Encoding.UTF8.GetBytes(RandomContent());
         var wrongSha = RandomSha(); // deliberate mismatch
@@ -299,21 +301,75 @@ public class AiConfigApplyServiceTests : IDisposable {
         );
         var service = BuildService(api);
 
-        // ApplyAsync catches the SHA exception internally; the pipeline throws from DownloadAndWrite.
-        // The outer finally still runs, but the wipe phase has not yet run (download is Phase 3,
-        // wipe is Phase 2 — wait, actually: pre-flight → download → wipe → move → finalize).
-        // Checking the actual order: DownloadAndWrite → WipeManagedRoots → MoveFilesToFinalLocation.
-        // So on SHA failure the wipe has not happened; no files end up in the final location.
-        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ApplyAsync(manifest));
+        var result = await service.ApplyAsync(manifest);
 
-        // The final file must NOT exist in ClaudeRoot (wipe ran, move did not)
-        Assert.False(File.Exists(Path.Combine(_claudeRoot, "agents", "dev", "AGENT.md")));
+        // Apply succeeded — file is in place
+        Assert.True(result.Success);
+        Assert.Equal(AiConfigApplyStatuses.Applied, result.Status);
+        Assert.True(File.Exists(Path.Combine(_claudeRoot, "agents", "dev", "AGENT.md")));
+
+        // Warning message lists the mismatched file
+        Assert.NotNull(result.Message);
+        Assert.Contains("agents/dev/AGENT.md", result.Message!);
+        Assert.Contains("SHA verification", result.Message!);
     }
 
     [Fact]
-    public async Task ApplyAsync_NetworkFailureMidDownload_AbortsAndDiskLeftPartial() {
-        // The fake API fails on the second file. The first file's temp write happened;
-        // wipe has not run yet, so disk is in the partial-temp state. This is acknowledged behavior:
+    public async Task ApplyAsync_MultipleShaMismatches_MessageListsFirst3ThenRemainder() {
+        // 5 files with wrong SHAs — message should show first 3 then "... and 2 more"
+        var api = new FakeApiClient();
+        var files = new List<AiConfigManifestFile>();
+        for ( var i = 1; i <= 5; i++ ) {
+            var content = Encoding.UTF8.GetBytes(RandomContent());
+            var path = $"agents/agent{i}/AGENT.md";
+            api.AddFile(path, content);
+            files.Add(new AiConfigManifestFile(path, RandomSha(), content.Length)); // wrong SHA
+        }
+
+        var manifest = new AiConfigManifest(
+            Guid.NewGuid().ToString("N")[..8],
+            DateTime.UtcNow,
+            new[] { "agents/" },
+            files
+        );
+        var service = BuildService(api);
+
+        var result = await service.ApplyAsync(manifest);
+
+        Assert.True(result.Success);
+        Assert.Equal(AiConfigApplyStatuses.Applied, result.Status);
+        Assert.NotNull(result.Message);
+        Assert.Contains("5 file(s)", result.Message!);
+        Assert.Contains("... and 2 more", result.Message!);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_WipeRunsBeforeDownload() {
+        // Pre-populate the managed root with a stale file
+        var agentsDir = Path.Combine(_claudeRoot, "agents");
+        Directory.CreateDirectory(agentsDir);
+        var staleFile = Path.Combine(agentsDir, "stale.md");
+        File.WriteAllText(staleFile, "stale content");
+
+        var (manifest, api) = BuildHappyManifest(
+            new[] { "agents/" },
+            "agents/dev/AGENT.md"
+        );
+        var service = BuildService(api);
+
+        var result = await service.ApplyAsync(manifest);
+
+        Assert.True(result.Success);
+        // Stale file was wiped
+        Assert.False(File.Exists(staleFile));
+        // New file is in place
+        Assert.True(File.Exists(Path.Combine(_claudeRoot, "agents", "dev", "AGENT.md")));
+    }
+
+    [Fact]
+    public async Task ApplyAsync_NetworkFailureMidDownload_ThrowsAndDiskLeftPartial() {
+        // The fake API fails on the second file. The first file has already been written directly
+        // to its final location (no temp dir in the new flow). This is acknowledged behavior:
         // next apply re-wipes and re-downloads from scratch.
         var api = new FakeApiClient();
         var content1 = Encoding.UTF8.GetBytes(RandomContent());
@@ -332,12 +388,19 @@ public class AiConfigApplyServiceTests : IDisposable {
         );
         var service = BuildService(api);
 
-        // The pipeline throws from DownloadAndWrite (before wipe), caught at the top level.
+        // Network failure during direct download throws from DownloadToFinalLocation
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.ApplyAsync(manifest));
 
-        // Neither file ends up in the final ClaudeRoot location (wipe + move never ran)
-        Assert.False(File.Exists(Path.Combine(_claudeRoot, "agents", "dev", "AGENT.md")));
-        Assert.False(File.Exists(Path.Combine(_claudeRoot, "agents", "tech-lead", "AGENT.md")));
+        // First file IS on disk (written directly, no temp-then-move)
+        Assert.True(File.Exists(Path.Combine(_claudeRoot, "agents", "dev", "AGENT.md")));
+        // Second file: FileStream is created before the download attempt (FileMode.Create), so an
+        // empty file stub may exist on disk — this is acknowledged partial-state behavior.
+        // The key invariant is that the fingerprint does NOT reflect this manifest (Finalize never ran).
+        var expectedFingerprint = ManifestFingerprint.Compute(manifest);
+        var storedFingerprint = File.Exists(AiConfigPaths.FingerprintPath)
+            ? File.ReadAllText(AiConfigPaths.FingerprintPath).Trim()
+            : "";
+        Assert.NotEqual(expectedFingerprint, storedFingerprint);
     }
 
     // ─── Fake API client ─────────────────────────────────────────────────────
