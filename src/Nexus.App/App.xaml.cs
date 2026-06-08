@@ -90,7 +90,7 @@ public partial class App : Application {
         _trayManager?.StartSync();
         TriggerUpdateCheck();
         StartUpdateTimer();
-        await TriggerAiConfigCheck();
+        await TriggerAiConfigCheck(isManualTrigger: false);
     }
 
     private void StartUpdateTimer() {
@@ -98,7 +98,7 @@ public partial class App : Application {
         _updateTimer = new DispatcherTimer { Interval = TimeSpan.FromHours(4) };
         _updateTimer.Tick += (_, _) => {
             TriggerUpdateCheck();
-            _ = TriggerAiConfigCheck();  // fire-and-forget; UI thread (Tick fires on dispatcher)
+            _ = TriggerAiConfigCheck(isManualTrigger: false);  // fire-and-forget; UI thread (Tick fires on dispatcher)
         };
         _updateTimer.Start();
     }
@@ -131,20 +131,33 @@ public partial class App : Application {
     }
 
     /// <summary>Must be invoked on the UI dispatcher (calls ShowDialog).</summary>
-    public async Task TriggerAiConfigCheck() {
+    public async Task TriggerAiConfigCheck( bool isManualTrigger = false ) {
         if ( _aiConfigCheckInFlight ) return;
         if ( ! _config.IsLoggedIn ) return;
-        if ( ! ClaudeCodeInstallProbe.IsInstalled() ) {
-            _activity.Log("ai_config_check", "Claude Code not installed — sync skipped", "warning");
-            return;
-        }
         _aiConfigCheckInFlight = true;
         try {
             try {
                 var result = await _api.GetAiConfigManifest();
                 if ( ! result.Success ) {
-                    if ( result.StatusCode == 404 ) return;
+                    if ( result.StatusCode == 404 ) {
+                        if ( isManualTrigger ) {
+                            MessageBox.Show(
+                                "No AI Config snapshot available on the server.",
+                                "AI Config Sync",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Information);
+                        }
+                        return;
+                    }
+                    if ( result.IsAuthError ) return;
                     _activity.Log("ai_config_check", $"manifest fetch failed: {result.Message}", "error");
+                    if ( isManualTrigger ) {
+                        MessageBox.Show(
+                            result.Message ?? "Manifest fetch failed.",
+                            "AI Config Sync",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Error);
+                    }
                     return;
                 }
                 var manifest = result.Data!;
@@ -152,10 +165,14 @@ public partial class App : Application {
                     ? File.ReadAllText(AiConfigPaths.FingerprintPath).Trim()
                     : "";
                 var newFingerprint = ManifestFingerprint.Compute(manifest);
-                if ( currentFingerprint == newFingerprint ) return;
-                if ( ClaudeCodeInstallProbe.IsRunning() ) {
-                    _activity.Log("ai_config_check", "Claude Code is running — apply deferred. Close Claude Code and click 'Check AI Config' again.", "warning");
-                    _mainWindow?.RefreshState();
+                if ( currentFingerprint == newFingerprint ) {
+                    if ( isManualTrigger ) {
+                        MessageBox.Show(
+                            "AI Config is already up to date.",
+                            "AI Config Sync",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Information);
+                    }
                     return;
                 }
                 var prompt = new AiConfigUpdatePromptWindow(manifest.Version);
@@ -163,9 +180,31 @@ public partial class App : Application {
                 var apply = await _aiConfigApplyService!.ApplyAsync(manifest);
                 _activity.Log("ai_config_apply", $"{apply.Status}: {apply.Message}", apply.Success ? "ok" : "error");
                 _mainWindow?.RefreshState();
+                if ( isManualTrigger ) {
+                    if ( apply.Status == AiConfigApplyStatuses.Aborted ) {
+                        MessageBox.Show(
+                            apply.Message ?? "Apply aborted.",
+                            "AI Config Sync",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Error);
+                    } else {
+                        MessageBox.Show(
+                            $"AI Config applied — version {apply.Version}, {manifest.Files.Count} files updated.",
+                            "AI Config Sync",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Information);
+                    }
+                }
             } catch ( Exception ex ) {
                 _activity.Log("ai_config_check", $"unexpected error: {ex.Message}", "error");
                 _log.Error("TriggerAiConfigCheck failed", ex);
+                if ( isManualTrigger ) {
+                    MessageBox.Show(
+                        ex.Message,
+                        "AI Config Sync",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error);
+                }
             }
         } finally {
             _aiConfigCheckInFlight = false;

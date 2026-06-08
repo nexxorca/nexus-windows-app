@@ -1,6 +1,6 @@
 # Nexus Windows App - Structure
 
-> Last updated: 2026-06-02 | Project: `nexus-windows-app`
+> Last updated: 2026-06-08 | Project: `nexus-windows-app`
 
 ## Purpose
 Native WPF tray application that synchronizes Claude Code session transcripts from `~/.claude/projects/` to the Nexus server via API, with Velopack auto-update support.
@@ -38,7 +38,7 @@ src/Nexus.Sync/Models/
 ├── SubagentInfo.cs                  # AgentId, SubagentType, ToolUseId — detected subagent invocation
 ├── SyncState.cs                     # Files dict<string, FileState> — upload tracking; FileState: Size, Timestamp, Status
 ├── SyncResult.cs                    # Uploaded, Skipped, ParseSkipped, Errors, CompletedAt, Status — immutable result emitted by SyncEngine.SyncCompleted
-├── AiConfigApplyResult.cs           # Success, Status (enum: applied, aborted, skipped_no_snapshot, skipped_no_install), Version?, Message?
+├── AiConfigApplyResult.cs           # Success, Status (enum: Applied, Aborted, SkippedNoSnapshot, SkippedNoInstall), Version?, Message?
 └── AiConfigPaths.cs                 # Constants: ClaudeRoot, BackupsRoot, FingerprintPath; helpers: IsContainedIn(), ContainsReparsePoint()
 ```
 
@@ -50,13 +50,12 @@ src/Nexus.Sync/Models/
 
 ---
 
-## Services (11)
+## Services (10)
 
 ```
 src/Nexus.Core/Services/
 ├── INexusApiClient.cs               # Interface — GetAiConfigManifest, DownloadAiConfigFile; enables test seams
 ├── NexusApiClient.cs                # API client — Login, UploadTranscript, RevokeToken, GetAiConfigManifest, DownloadAiConfigFile; implements INexusApiClient
-├── ClaudeCodeInstallProbe.cs        # Static probe — File.Exists at %LOCALAPPDATA%\Programs\claude\claude.exe for IsInstalled(); Process.GetProcessesByName() for IsRunning()
 ├── LogService.cs                    # Thread-safe debug.log writer — Write(), Error()
 └── ActivityLogService.cs            # In-memory + JSONL activity log — Log(), GetRecent(), Flush()
 
@@ -113,7 +112,7 @@ src/Nexus.App/
 
 ```
 src/Nexus.App/
-├── App.xaml.cs                      # Single-instance (Mutex), wires services, manages tray + sync + update timers; TriggerAiConfigCheck() + login hook + 4h piggy-back; orphan .tmp cleanup on startup
+├── App.xaml.cs                      # Single-instance (Mutex), wires services, manages tray + sync + update timers; TriggerAiConfigCheck(isManualTrigger) + login hook + 4h piggy-back; orphan .tmp cleanup on startup
 ├── TrayIconManager.cs               # System tray icon, context menu, sync timer, tooltip updates
 └── StartupManager.cs                # Static helper — registers/unregisters app in HKCU\...\Run for Windows startup
 ```
@@ -165,7 +164,6 @@ The server declares which directories it manages via the manifest's `managed_roo
 
 **Phase 1 — Pre-flight gates** (abort if any fails; log reason):
 - Is any symlink or junction under `~/.claude/managed_roots`? Refuse apply; reparse points are not compatible with wipe.
-- Is `claude.exe` running? Refuse apply with message "Close Claude Code and retry."
 - Does the manifest declare `managed_roots`? (missing field treated as empty array with warning logged; one-release fallback for server-side rollout safety)
 - Validate each `managed_roots` entry: relative path, no `..`, no absolute, no `:`, no control chars, no embedded `\`, ≤ 260 chars.
 - Validate each file path in `files[]`: must fall within at least one `managed_roots` entry; same character/traversal rules.
@@ -211,10 +209,6 @@ No backups, no rollback, no atomicity guarantee beyond "either it worked or it d
 ### Trust Model
 
 The channel is **server-trust**: HTTPS + Sanctum bearer token. A compromised server (or leaked admin token) can write arbitrary content to any path under `managed_roots`, including hooks (which execute) and agent prompts (which steer Claude Code). This is a known gap for production use. **Planned closure**: offline signing of the manifest with Ed25519; see `project_docs/improvements.md` "AI Config Manifest Signature" for details. Current status: trusted ops only, not production-grade.
-
-### Requirements
-
-Claude Code must be installed at `%LOCALAPPDATA%\Programs\claude\claude.exe` (standard installer path). If not detected, apply is deferred with "close Claude Code and retry" message. The probe runs once per trigger (no caching across checks).
 
 ---
 
