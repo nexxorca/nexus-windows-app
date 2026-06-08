@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Nexus.Sync\Nexus.Sync.csproj" />
+    <ProjectReference Include="..\..\src\Nexus.Core\Nexus.Core.csproj" />
   </ItemGroup>
 
 </Project>

@@ -36,7 +36,7 @@ public partial class App : Application {
     protected override void OnStartup( StartupEventArgs e ) {
         base.OnStartup(e);
 
-        CleanupOrphanAiConfigTmpFiles();
+        CleanupLegacyAiConfigArtifacts();
 
         _mutex = new Mutex(true, "NexusDesktopApp", out bool isNew);
         if ( ! isNew ) {
@@ -132,8 +132,6 @@ public partial class App : Application {
 
     /// <summary>Must be invoked on the UI dispatcher (calls ShowDialog).</summary>
     public async Task TriggerAiConfigCheck() {
-        // AI config sync is postponed pending server-side kill switch on Nexus web.
-        return;
         if ( _aiConfigCheckInFlight ) return;
         if ( ! _config.IsLoggedIn ) return;
         if ( ! ClaudeCodeInstallProbe.IsInstalled() ) {
@@ -142,23 +140,33 @@ public partial class App : Application {
         }
         _aiConfigCheckInFlight = true;
         try {
-            var result = await _api.GetAiConfigManifest();
-            if ( ! result.Success ) {
-                if ( result.StatusCode == 404 ) return;
-                _activity.Log("ai_config_check", $"manifest fetch failed: {result.Message}", "error");
-                return;
+            try {
+                var result = await _api.GetAiConfigManifest();
+                if ( ! result.Success ) {
+                    if ( result.StatusCode == 404 ) return;
+                    _activity.Log("ai_config_check", $"manifest fetch failed: {result.Message}", "error");
+                    return;
+                }
+                var manifest = result.Data!;
+                var currentFingerprint = File.Exists(AiConfigPaths.FingerprintPath)
+                    ? File.ReadAllText(AiConfigPaths.FingerprintPath).Trim()
+                    : "";
+                var newFingerprint = ManifestFingerprint.Compute(manifest);
+                if ( currentFingerprint == newFingerprint ) return;
+                if ( ClaudeCodeInstallProbe.IsRunning() ) {
+                    _activity.Log("ai_config_check", "Claude Code is running — apply deferred. Close Claude Code and click 'Check AI Config' again.", "warning");
+                    _mainWindow?.RefreshState();
+                    return;
+                }
+                var prompt = new AiConfigUpdatePromptWindow(manifest.Version);
+                if ( prompt.ShowDialog() != true ) return;
+                var apply = await _aiConfigApplyService!.ApplyAsync(manifest);
+                _activity.Log("ai_config_apply", $"{apply.Status}: {apply.Message}", apply.Success ? "ok" : "error");
+                _mainWindow?.RefreshState();
+            } catch ( Exception ex ) {
+                _activity.Log("ai_config_check", $"unexpected error: {ex.Message}", "error");
+                _log.Error("TriggerAiConfigCheck failed", ex);
             }
-            var manifest = result.Data!;
-            var currentFingerprint = File.Exists(AiConfigPaths.FingerprintPath)
-                ? File.ReadAllText(AiConfigPaths.FingerprintPath).Trim()
-                : "";
-            var newFingerprint = ManifestFingerprint.Compute(manifest);
-            if ( currentFingerprint == newFingerprint ) return;
-            var prompt = new AiConfigUpdatePromptWindow(manifest.Version);
-            if ( prompt.ShowDialog() != true ) return;
-            var apply = await _aiConfigApplyService!.ApplyAsync(manifest);
-            _activity.Log("ai_config_apply", $"{apply.Status}: {apply.Message}", apply.Success ? "ok" : "error");
-            _mainWindow?.RefreshState();
         } finally {
             _aiConfigCheckInFlight = false;
         }
@@ -197,7 +205,7 @@ public partial class App : Application {
         _mainWindow?.Close();
     }
 
-    public async void Logout() {
+    public async Task Logout() {
         _trayManager?.StopSync();
         _mainWindow?.Hide();
         _mainWindow?.RefreshState();
@@ -208,27 +216,30 @@ public partial class App : Application {
         ShowLoginWindow();
     }
 
-    // Sub-step 4.7: clean up orphan .tmp/.rollback.tmp files left by a process kill mid-apply.
+    // One-shot legacy cleanup for artifacts left by 1.2.0/1.2.1.
     // Runs before any sync or AI-config trigger can fire. Never throws — must not block startup.
-    private static void CleanupOrphanAiConfigTmpFiles() {
-        var claudeRoot = AiConfigPaths.ClaudeRoot;
-        if ( ! Directory.Exists(claudeRoot) ) return;
-
-        try {
-            var tmpFiles = Directory.GetFiles(claudeRoot, "*.tmp", SearchOption.AllDirectories)
-                .Concat(Directory.GetFiles(claudeRoot, "*.rollback.tmp", SearchOption.AllDirectories));
-
-            foreach ( var file in tmpFiles ) {
-                try {
-                    File.Delete(file);
-                } catch ( Exception ex ) {
-                    // Best-effort — individual failures are logged but never fatal
-                    var log = new LogService();
-                    log.Error($"Startup cleanup: failed to delete orphan tmp file {file}", ex);
-                }
+    private static void CleanupLegacyAiConfigArtifacts() {
+        // Delete the legacy backup tree (~/.claude/backups/) created by the old surgical-apply pipeline.
+        // Idempotent — safe to run on every startup once the directory is gone.
+        if ( Directory.Exists(AiConfigPaths.BackupsRoot) ) {
+            try {
+                Directory.Delete(AiConfigPaths.BackupsRoot, recursive: true);
+            } catch {
+                // Best-effort — startup must not be blocked
             }
-        } catch {
-            // If the directory walk itself fails, silently ignore — startup must not be blocked
+        }
+
+        // Delete the legacy ai-config-version marker file written by the pre-fingerprint pipeline.
+        // Path is hardcoded here because AiConfigPaths.VersionMarkerPath was removed in 1.2.2.
+        var versionMarker = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Nexus", "ai-config-version");
+        if ( File.Exists(versionMarker) ) {
+            try {
+                File.Delete(versionMarker);
+            } catch {
+                // Best-effort
+            }
         }
     }
 

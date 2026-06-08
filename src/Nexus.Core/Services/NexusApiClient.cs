@@ -7,7 +7,7 @@ using Nexus.Core.Models;
 
 namespace Nexus.Core.Services;
 
-public class NexusApiClient {
+public class NexusApiClient : INexusApiClient {
     private readonly HttpClient _http;
     private readonly LogService _log;
     private string _baseUrl = "";
@@ -22,7 +22,24 @@ public class NexusApiClient {
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
 
+    // Test seam: inject a fake HttpMessageHandler via a pre-built HttpClient (used by NexusApiClientAiConfigTests)
+    internal NexusApiClient( HttpClient http, LogService log ) {
+        _log = log;
+        _http = http;
+        _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+    }
+
     public void Configure( string baseUrl, string? authToken ) {
+        if ( ! Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) ) {
+            throw new ArgumentException($"Invalid URL: '{baseUrl}' is not a valid absolute URI.");
+        }
+        var isHttps = uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase);
+        var isLocalHttp = uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase)
+            && ( uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                 || uri.Host.Equals("127.0.0.1", StringComparison.Ordinal) );
+        if ( ! isHttps && ! isLocalHttp ) {
+            throw new ArgumentException($"Invalid URL: scheme '{uri.Scheme}' with host '{uri.Host}' is not allowed. Use https, or http with localhost/127.0.0.1.");
+        }
         _baseUrl = baseUrl.TrimEnd('/');
         _http.DefaultRequestHeaders.Authorization = ! string.IsNullOrEmpty(authToken)
             ? new AuthenticationHeaderValue("Bearer", authToken)
@@ -148,10 +165,21 @@ public class NexusApiClient {
                 return ApiResult<AiConfigManifest>.Fail(0, "Failed to deserialize manifest");
             }
 
+            if ( manifest.ManagedRoots == null ) {
+                _log.Write("manifest missing managed_roots field; treating as empty (one-release fallback — server should ship this field)");
+                manifest = manifest with { ManagedRoots = [] };
+            }
+
             return ApiResult<AiConfigManifest>.Ok(manifest);
         } catch ( TaskCanceledException ) {
             _log.Write("GetAiConfigManifest timed out");
             return ApiResult<AiConfigManifest>.Fail(0, "Request timed out");
+        } catch ( OperationCanceledException ) {
+            _log.Write("GetAiConfigManifest timed out");
+            return ApiResult<AiConfigManifest>.Fail(0, "Request timed out");
+        } catch ( JsonException ex ) {
+            _log.Write($"GetAiConfigManifest deserialization error: {ex.Message}");
+            return ApiResult<AiConfigManifest>.Fail(0, "Failed to deserialize manifest");
         } catch ( HttpRequestException ex ) {
             _log.Write($"GetAiConfigManifest connection error: {ex.Message}");
             return ApiResult<AiConfigManifest>.Fail(0, ex.Message);
@@ -182,6 +210,9 @@ public class NexusApiClient {
             await response.Content.CopyToAsync(destination, cts.Token);
             return ApiResult.Ok();
         } catch ( TaskCanceledException ) {
+            _log.Write($"DownloadAiConfigFile timed out [{path}]");
+            return ApiResult.Fail(0, "Request timed out");
+        } catch ( OperationCanceledException ) {
             _log.Write($"DownloadAiConfigFile timed out [{path}]");
             return ApiResult.Fail(0, "Request timed out");
         } catch ( HttpRequestException ex ) {

@@ -63,18 +63,84 @@ public class ManifestFingerprintTests {
         Assert.NotEqual(ManifestFingerprint.Compute(twoFiles), ManifestFingerprint.Compute(threeFiles));
     }
 
+    // Replaced: Compute_EmptyFilesListYieldsKnownConstant (pinned SHA-256("") constant).
+    // The constant was brittle — it locked in an implementation detail rather than behavior.
+    // These two behavioral tests cover the same surface without pinning the hash algorithm output.
+
     [Fact]
-    public void Compute_EmptyFilesListYieldsKnownConstant() {
-        var empty = new AiConfigManifest("1.0.0", DateTime.UtcNow, new List<AiConfigManifestFile>());
+    public void Compute_TwoEmptyManifests_ProduceEqualFingerprints() {
+        var first = new AiConfigManifest("1.0.0", DateTime.UtcNow, Array.Empty<string>(), new List<AiConfigManifestFile>());
+        var second = new AiConfigManifest("2.0.0", DateTime.UtcNow.AddDays(1), new[] { "agents/" }, new List<AiConfigManifestFile>());
 
-        // SHA-256 of empty string (UTF-8 bytes) — well-defined cryptographic constant.
-        const string sha256OfEmpty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        // Version and managed_roots are not factored into the fingerprint — only files matter.
+        Assert.Equal(ManifestFingerprint.Compute(first), ManifestFingerprint.Compute(second));
+    }
 
-        Assert.Equal(sha256OfEmpty, ManifestFingerprint.Compute(empty));
+    [Fact]
+    public void Compute_EmptyManifest_DiffersFromSingleFileManifest() {
+        var empty = new AiConfigManifest("1.0.0", DateTime.UtcNow, Array.Empty<string>(), new List<AiConfigManifestFile>());
+        var oneFile = BuildManifest(("agents/dev/AGENT.md", "aaa111"));
+
+        Assert.NotEqual(ManifestFingerprint.Compute(empty), ManifestFingerprint.Compute(oneFile));
+    }
+
+    [Fact]
+    public void Compute_UnicodePath_RoundTripsToStableFingerprint() {
+        // UTF-8 paths with accented or diacritic characters must produce a stable, deterministic hash.
+        var first = BuildManifest(("agents/tëst/AGENT.md", "abc123"));
+        var second = BuildManifest(("agents/tëst/AGENT.md", "abc123"));
+
+        Assert.Equal(ManifestFingerprint.Compute(first), ManifestFingerprint.Compute(second));
+    }
+
+    [Fact]
+    public void Compute_DifferentCasePaths_ProduceDifferentFingerprints() {
+        // The implementation sorts by StringComparer.Ordinal — case matters.
+        // "Agents/dev.md" and "agents/dev.md" are distinct entries and yield distinct fingerprints.
+        var upper = BuildManifest(("Agents/dev.md", "aaa111"));
+        var lower = BuildManifest(("agents/dev.md", "aaa111"));
+
+        Assert.NotEqual(ManifestFingerprint.Compute(upper), ManifestFingerprint.Compute(lower));
+    }
+
+    [Fact]
+    public void Compute_SingleFileManifest_ProducesStableFingerprint() {
+        var manifest = BuildManifest(("agents/dev/AGENT.md", "deadbeef"));
+
+        var first = ManifestFingerprint.Compute(manifest);
+        var second = ManifestFingerprint.Compute(manifest);
+
+        Assert.Equal(first, second);
+        // Also verify it differs from the empty-manifest fingerprint
+        var empty = new AiConfigManifest("1.0.0", DateTime.UtcNow, Array.Empty<string>(), new List<AiConfigManifestFile>());
+        Assert.NotEqual(ManifestFingerprint.Compute(empty), first);
+    }
+
+    [Fact]
+    public void Compute_DuplicatePathEntries_ProducesDeterministicFingerprint() {
+        // Two entries with the same path but different SHAs — the implementation does not deduplicate.
+        // Both appear in the sorted string. The behavior is pinned here so any change to deduplication
+        // logic surfaces as a test failure and requires a conscious decision.
+        var withDuplicates = new AiConfigManifest(
+            "1.0.0", DateTime.UtcNow, Array.Empty<string>(),
+            new List<AiConfigManifestFile> {
+                new("agents/dev/AGENT.md", "sha-first", 100),
+                new("agents/dev/AGENT.md", "sha-second", 100)
+            }
+        );
+
+        var first = ManifestFingerprint.Compute(withDuplicates);
+        var second = ManifestFingerprint.Compute(withDuplicates);
+
+        Assert.Equal(first, second);
+
+        // Must differ from a manifest with just one of those entries
+        var single = BuildManifest(("agents/dev/AGENT.md", "sha-first"));
+        Assert.NotEqual(ManifestFingerprint.Compute(single), first);
     }
 
     private static AiConfigManifest BuildManifest( params (string path, string sha)[] files ) {
         var entries = files.Select(f => new AiConfigManifestFile(f.path, f.sha, 100L)).ToList();
-        return new AiConfigManifest("1.0.0", DateTime.UtcNow, entries);
+        return new AiConfigManifest("1.0.0", DateTime.UtcNow, Array.Empty<string>(), entries);
     }
 }

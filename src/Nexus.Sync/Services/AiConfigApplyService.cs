@@ -7,14 +7,14 @@ using Nexus.Sync.Models;
 namespace Nexus.Sync.Services;
 
 public class AiConfigApplyService {
-    private readonly NexusApiClient _api;
+    private readonly INexusApiClient _api;
     private readonly ActivityLogService _activity;
     private readonly LogService _log;
 
     private readonly object _lock = new();
     private bool _running;
 
-    public AiConfigApplyService( NexusApiClient api, ActivityLogService activity, LogService log ) {
+    public AiConfigApplyService( INexusApiClient api, ActivityLogService activity, LogService log ) {
         _api = api;
         _activity = activity;
         _log = log;
@@ -22,135 +22,38 @@ public class AiConfigApplyService {
 
     public async Task<AiConfigApplyResult> ApplyAsync( AiConfigManifest manifest ) {
         lock ( _lock ) {
-            if ( _running ) return new AiConfigApplyResult(false, "aborted", null, "already running");
+            if ( _running ) return new AiConfigApplyResult(false, AiConfigApplyStatuses.Aborted, null, "already running");
             _running = true;
         }
 
-        var backupDir = Path.Combine(AiConfigPaths.BackupsRoot, DateTime.UtcNow.ToString("yyyy-MM-dd_HHmmss"));
+        // Contract guard: NexusApiClient.GetAiConfigManifest substitutes ManagedRoots = [] when the
+        // server omits the field. If it is somehow null here, that is a caller bug — fail fast.
+        if ( manifest.ManagedRoots is null )
+            throw new InvalidOperationException("ManagedRoots must be non-null — NexusApiClient.GetAiConfigManifest guarantees this.");
+
         string? tempDir = null;
 
         try {
-            // Step 2 + 3a+b: backup pass
-            _activity.Log("ai_config_apply", "Backup: starting pre-apply backup");
-            EnforceBackupRetention();
-            Directory.CreateDirectory(backupDir);
-            BackupClaudeRoot(backupDir);
-            _activity.Log("ai_config_apply", $"Backup: complete → {backupDir}");
+            var abortResult = PreFlight(manifest);
+            if ( abortResult != null ) return abortResult;
 
-            // Step 4: temp dir
-            tempDir = Path.Combine(Path.GetTempPath(), $"nexus-ai-config-{DateTime.UtcNow:yyyyMMddHHmmss}");
+            var claudeRootFull = Path.GetFullPath(AiConfigPaths.ClaudeRoot);
+
+            tempDir = Path.Combine(Path.GetTempPath(), $"nexus-ai-config-{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempDir);
 
-            // Step 5: download
-            _activity.Log("ai_config_apply", $"Download: fetching {manifest.Files.Count} files");
-            foreach ( var f in manifest.Files ) {
-                var destPath = Path.Combine(tempDir, f.Path.Replace('/', Path.DirectorySeparatorChar));
-                var parentDir = Path.GetDirectoryName(destPath);
-                if ( parentDir != null ) Directory.CreateDirectory(parentDir);
+            await DownloadAndWrite(manifest, tempDir, claudeRootFull);
 
-                using var fileStream = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
-                var downloadResult = await _api.DownloadAiConfigFile(f.Path, fileStream);
-                if ( ! downloadResult.Success ) {
-                    _activity.Log("ai_config_apply", $"Download: ABORT — {f.Path}: {downloadResult.Message}", "error");
-                    _log.Error($"AI config download failed for {f.Path}: {downloadResult.Message}");
-                    return new AiConfigApplyResult(false, "aborted", null, $"Download failed for {f.Path}: {downloadResult.Message}");
-                }
-            }
-            _activity.Log("ai_config_apply", "Download: all files downloaded");
+            WipeManagedRoots(manifest, claudeRootFull);
 
-            // Step 6: SHA-256 verify
-            foreach ( var f in manifest.Files ) {
-                var filePath = Path.Combine(tempDir, f.Path.Replace('/', Path.DirectorySeparatorChar));
-                var actualSha = ComputeSha256(filePath);
-                if ( actualSha != f.Sha ) {
-                    _activity.Log("ai_config_apply", $"Verify: ABORT — SHA mismatch for {f.Path}", "error");
-                    _log.Error($"AI config SHA mismatch: {f.Path} expected={f.Sha} actual={actualSha}");
-                    return new AiConfigApplyResult(false, "aborted", null, $"SHA mismatch for {f.Path}");
-                }
-            }
-            _activity.Log("ai_config_apply", "Verify: all SHAs match");
+            MoveFilesToFinalLocation(manifest, tempDir, claudeRootFull);
 
-            // Step 7: write phase — copy to .tmp
-            var writtenTmps = new List<string>();
-            foreach ( var f in manifest.Files ) {
-                var targetPath = Path.Combine(AiConfigPaths.ClaudeRoot, f.Path.Replace('/', Path.DirectorySeparatorChar));
-                var targetTmp = targetPath + ".tmp";
-                var parentDir = Path.GetDirectoryName(targetTmp);
-                if ( parentDir != null ) Directory.CreateDirectory(parentDir);
+            Finalize(manifest);
 
-                try {
-                    var srcPath = Path.Combine(tempDir, f.Path.Replace('/', Path.DirectorySeparatorChar));
-                    using ( var src = new FileStream(srcPath, FileMode.Open, FileAccess.Read, FileShare.Read) )
-                    using ( var dst = new FileStream(targetTmp, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 4096, FileOptions.WriteThrough) ) {
-                        await src.CopyToAsync(dst);
-                        await dst.FlushAsync();
-                    }
-                    writtenTmps.Add(targetTmp);
-                } catch ( Exception ex ) {
-                    _activity.Log("ai_config_apply", $"Write: ABORT — {f.Path}: {ex.Message}", "error");
-                    _log.Error($"AI config write failed for {f.Path}", ex);
-                    DeleteTmpFiles(writtenTmps);
-                    return new AiConfigApplyResult(false, "aborted", null, $"Write failed for {f.Path}: {ex.Message}");
-                }
-            }
-            _activity.Log("ai_config_apply", "Write: all .tmp files written");
-
-            // Step 8: rename phase
-            var successList = new List<string>();
-            foreach ( var f in manifest.Files ) {
-                var targetPath = Path.Combine(AiConfigPaths.ClaudeRoot, f.Path.Replace('/', Path.DirectorySeparatorChar));
-                var targetTmp = targetPath + ".tmp";
-
-                try {
-                    File.Move(targetTmp, targetPath, overwrite: true);
-                    successList.Add(f.Path);
-                } catch ( Exception ex ) {
-                    _activity.Log("ai_config_apply", $"Rename: ROLLBACK triggered — {f.Path}: {ex.Message}", "error");
-                    _log.Error($"AI config rename failed for {f.Path} — triggering rollback", ex);
-
-                    var remainingTmps = manifest.Files
-                        .Skip(successList.Count + 1)
-                        .Select(rf => Path.Combine(AiConfigPaths.ClaudeRoot, rf.Path.Replace('/', Path.DirectorySeparatorChar)) + ".tmp")
-                        .ToList();
-
-                    await RollbackAsync(backupDir, successList, manifest);
-                    DeleteTmpFiles(remainingTmps);
-
-                    return new AiConfigApplyResult(false, "rolled_back", null,
-                        $"Rename failed for {f.Path}: {ex.Message} — restored previous version. Close Claude Code and retry.");
-                }
-            }
-            _activity.Log("ai_config_apply", $"Rename: {successList.Count} files renamed");
-
-            // Step 9: perfect-fit delete
-            PerfectFitDelete(manifest);
-            _activity.Log("ai_config_apply", "Perfect-fit delete: complete");
-
-            // Step 10: fingerprint marker (replaces version marker; manifest.Version preserved for log display only)
-            var fingerprint = ManifestFingerprint.Compute(manifest);
-            var markerDir = Path.GetDirectoryName(AiConfigPaths.FingerprintPath);
-            if ( markerDir != null ) Directory.CreateDirectory(markerDir);
-            File.WriteAllText(AiConfigPaths.FingerprintPath, fingerprint);
-            _activity.Log("ai_config_apply", $"Fingerprint marker written (version {manifest.Version})");
-
-            // 4.3: remove legacy ai-config-version file after first successful apply post-upgrade
-            if ( File.Exists(AiConfigPaths.VersionMarkerPath) ) {
-                try {
-                    File.Delete(AiConfigPaths.VersionMarkerPath);
-                    _log.Write("AI config: removed legacy version marker file");
-                } catch ( Exception ex ) {
-                    _log.Error("AI config: failed to delete legacy version marker", ex);
-                }
-            }
-
-            // Step 11: success
-            return new AiConfigApplyResult(true, "applied", manifest.Version, null);
+            return new AiConfigApplyResult(true, AiConfigApplyStatuses.Applied, manifest.Version, null);
 
         } finally {
-            // Step 12: drop lock (via _running clear) + delete tempDir
-            lock ( _lock ) {
-                _running = false;
-            }
+            lock ( _lock ) { _running = false; }
 
             if ( tempDir != null && Directory.Exists(tempDir) ) {
                 try {
@@ -163,164 +66,220 @@ public class AiConfigApplyService {
         }
     }
 
-    // 4.3 — Rollback: reverse-walk successList, restore each file from backup
-    private async Task RollbackAsync( string backupDir, List<string> successList, AiConfigManifest manifest ) {
-        _activity.Log("ai_config_apply", $"Rollback: restoring {successList.Count} files from {backupDir}");
+    // ─── Phase 1: Pre-flight ─────────────────────────────────────────────────
 
-        for ( var i = successList.Count - 1; i >= 0; i-- ) {
-            var relPath = successList[i];
-            var osSep = relPath.Replace('/', Path.DirectorySeparatorChar);
-            var src = Path.Combine(backupDir, osSep);
-            var target = Path.Combine(AiConfigPaths.ClaudeRoot, osSep);
-            var rollbackTmp = target + ".rollback.tmp";
+    private AiConfigApplyResult? PreFlight( AiConfigManifest manifest ) {
+        // (1) Manifest path validation — cheap, run before disk walks
+        var validationError = ValidateManifestPaths(manifest);
+        if ( validationError != null ) {
+            _activity.Log("ai_config_apply", $"Pre-flight ABORT — {validationError}", "error");
+            _log.Error($"AI config pre-flight failed: {validationError}");
+            return new AiConfigApplyResult(false, AiConfigApplyStatuses.Aborted, null, validationError);
+        }
 
-            try {
-                if ( ! File.Exists(src) ) {
-                    // Newly-added manifest path with no backup counterpart — skip
-                    _activity.Log("ai_config_apply", $"Rollback: skipping {relPath} — no backup counterpart (newly-added file)", "warning");
-                    _log.Write($"AI config rollback: skipping {relPath} — no backup counterpart");
-                    continue;
-                }
+        // (2) Symlink / reparse-point check — disk walk, after manifest validation
+        var claudeRootFull = Path.GetFullPath(AiConfigPaths.ClaudeRoot);
+        foreach ( var root in manifest.ManagedRoots! ) {
+            var rootFull = Path.GetFullPath(Path.Combine(AiConfigPaths.ClaudeRoot, root.TrimEnd('/', '\\')));
+            if ( ! IsContainedInClaudeRoot(claudeRootFull, rootFull) ) continue; // already caught by validation
 
-                File.Copy(src, rollbackTmp, overwrite: true);
-                using ( var fs = new FileStream(rollbackTmp, FileMode.Open, FileAccess.Write, FileShare.None, bufferSize: 4096, FileOptions.WriteThrough) ) {
-                    await fs.FlushAsync();
-                }
-                File.Move(rollbackTmp, target, overwrite: true);
-
-            } catch ( Exception ex ) {
-                // Rollback step itself failed — STOP immediately
-                var criticalMsg = $"Rollback failed at {relPath} — backup at {backupDir}. Restore manually.";
-                _activity.Log("ai_config_apply", criticalMsg, "error");
-                _log.Error($"AI config rollback failed at {relPath}", ex);
-
-                // Best-effort cleanup of any remaining .rollback.tmp files
-                CleanupRollbackTmpFiles();
-                throw;
+            if ( AiConfigPaths.ContainsReparsePoint(rootFull) ) {
+                var msg = $"Reparse point (symlink/junction) detected under managed root '{root}' — apply aborted. Remove the symlink and retry.";
+                _activity.Log("ai_config_apply", $"Pre-flight ABORT — {msg}", "error");
+                _log.Error($"AI config pre-flight: {msg}");
+                return new AiConfigApplyResult(false, AiConfigApplyStatuses.Aborted, null, msg);
             }
         }
 
-        // Best-effort cleanup of any remaining .rollback.tmp files
-        CleanupRollbackTmpFiles();
-
-        _activity.Log("ai_config_apply", "Rollback: complete — previous version restored");
+        return null;
     }
 
-    // 4.4 — Cap-on-take: delete oldest backup dirs until ≤ 4 remain
-    private void EnforceBackupRetention() {
-        if ( ! Directory.Exists(AiConfigPaths.BackupsRoot) ) return;
+    private string? ValidateManifestPaths( AiConfigManifest manifest ) {
+        foreach ( var root in manifest.ManagedRoots! ) {
+            var err = ValidateRelativePath(root, "managed_roots");
+            if ( err != null ) return err;
 
-        var dirs = Directory.GetDirectories(AiConfigPaths.BackupsRoot)
-            .OrderBy(d => Path.GetFileName(d))
+            // Ensure the resolved path is contained within ClaudeRoot
+            var claudeRootFull = Path.GetFullPath(AiConfigPaths.ClaudeRoot);
+            var rootNormalized = root.TrimEnd('/', '\\');
+            if ( rootNormalized.Length == 0 ) return "managed_roots entry must not be empty";
+
+            // A single-file entry (no trailing slash) resolves directly; verify containment
+            var resolvedFull = Path.GetFullPath(Path.Combine(AiConfigPaths.ClaudeRoot, rootNormalized));
+            if ( ! IsContainedInClaudeRoot(claudeRootFull, resolvedFull) ) {
+                return $"managed_roots entry '{root}' resolves outside ~/.claude/";
+            }
+        }
+
+        var managedRootsFull = manifest.ManagedRoots!
+            .Select(r => Path.GetFullPath(Path.Combine(AiConfigPaths.ClaudeRoot, r.TrimEnd('/', '\\'))))
             .ToList();
 
-        while ( dirs.Count > 4 ) {
-            var oldest = dirs[0];
-            dirs.RemoveAt(0);
-            try {
-                Directory.Delete(oldest, recursive: true);
-                _log.Write($"AI config: deleted old backup {oldest}");
-            } catch ( Exception ex ) {
-                _log.Error($"AI config: failed to delete old backup {oldest}", ex);
+        var claudeRootFullForFiles = Path.GetFullPath(AiConfigPaths.ClaudeRoot);
+
+        foreach ( var file in manifest.Files ) {
+            var err = ValidateRelativePath(file.Path, "files[].path");
+            if ( err != null ) return err;
+
+            // File must fall within at least one managed root
+            var fileFull = Path.GetFullPath(Path.Combine(AiConfigPaths.ClaudeRoot, file.Path.Replace('/', Path.DirectorySeparatorChar)));
+            if ( ! IsContainedInClaudeRoot(claudeRootFullForFiles, fileFull) ) {
+                return $"files[].path '{file.Path}' resolves outside ~/.claude/";
             }
-        }
-    }
 
-    // 4.4 — Recursive backup copy of ~/.claude/ → backupDir, skipping excluded paths
-    private void BackupClaudeRoot( string backupDir ) {
-        if ( ! Directory.Exists(AiConfigPaths.ClaudeRoot) ) return;
+            var inManagedRoot = managedRootsFull.Any(rootFull =>
+                fileFull.StartsWith(rootFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                fileFull.Equals(rootFull, StringComparison.OrdinalIgnoreCase));
 
-        var claudeRoot = AiConfigPaths.ClaudeRoot;
-        var allFiles = Directory.GetFiles(claudeRoot, "*", SearchOption.AllDirectories);
-
-        foreach ( var file in allFiles ) {
-            var relPath = Path.GetRelativePath(claudeRoot, file).Replace('\\', '/');
-
-            if ( AiConfigPaths.IsExcluded(relPath) ) continue;
-
-            var destPath = Path.Combine(backupDir, relPath.Replace('/', Path.DirectorySeparatorChar));
-            var destDir = Path.GetDirectoryName(destPath);
-            if ( destDir != null ) Directory.CreateDirectory(destDir);
-
-            File.Copy(file, destPath, overwrite: false);
-        }
-    }
-
-    // 4.5 — Perfect-fit delete: remove files not in manifest and not excluded; prune empty dirs
-    private void PerfectFitDelete( AiConfigManifest manifest ) {
-        if ( ! Directory.Exists(AiConfigPaths.ClaudeRoot) ) return;
-
-        var manifestPaths = new HashSet<string>(
-            manifest.Files.Select(f => f.Path.Replace('\\', '/')),
-            StringComparer.OrdinalIgnoreCase
-        );
-
-        var claudeRoot = AiConfigPaths.ClaudeRoot;
-        var allFiles = Directory.GetFiles(claudeRoot, "*", SearchOption.AllDirectories);
-
-        foreach ( var file in allFiles ) {
-            var relPath = Path.GetRelativePath(claudeRoot, file).Replace('\\', '/');
-
-            if ( AiConfigPaths.IsExcluded(relPath) ) continue;
-            if ( manifestPaths.Contains(relPath) ) continue;
-
-            try {
-                File.Delete(file);
-                _log.Write($"AI config perfect-fit delete: {relPath}");
-            } catch ( Exception ex ) {
-                _log.Error($"AI config perfect-fit delete failed for {relPath}", ex);
+            if ( ! inManagedRoot ) {
+                return $"files[].path '{file.Path}' does not fall within any managed_roots entry";
             }
         }
 
-        // Prune empty directories bottom-up (skip BackupsRoot and excluded dirs)
-        var allDirs = Directory.GetDirectories(claudeRoot, "*", SearchOption.AllDirectories)
-            .OrderByDescending(d => d.Length) // deepest first = bottom-up
-            .ToList();
+        return null;
+    }
 
-        foreach ( var dir in allDirs ) {
-            var relDir = Path.GetRelativePath(claudeRoot, dir).Replace('\\', '/') + "/";
+    private static string? ValidateRelativePath( string path, string fieldName ) {
+        if ( string.IsNullOrEmpty(path) ) return $"{fieldName} entry must not be empty";
+        if ( path.Length > 260 ) return $"{fieldName} entry exceeds 260 characters: '{path}'";
+        if ( Path.IsPathRooted(path) ) return $"{fieldName} entry must not be an absolute path: '{path}'";
+        if ( path.Contains(':') ) return $"{fieldName} entry must not contain ':': '{path}'";
+        if ( path.Contains('\\') ) return $"{fieldName} entry must not contain embedded backslash: '{path}'";
+        if ( path.Contains("..") ) return $"{fieldName} entry must not contain '..': '{path}'";
+        if ( path.Any(c => char.IsControl(c) ) ) return $"{fieldName} entry must not contain control characters: '{path}'";
+        return null;
+    }
 
-            if ( AiConfigPaths.IsExcluded(relDir) ) continue;
-            if ( dir.StartsWith(AiConfigPaths.BackupsRoot, StringComparison.OrdinalIgnoreCase) ) continue;
+    private static bool IsContainedInClaudeRoot( string claudeRootFull, string targetFull ) {
+        // Allow the root itself (for single-file managed_roots entries like "CLAUDE.md")
+        return targetFull.Equals(claudeRootFull, StringComparison.OrdinalIgnoreCase)
+            || AiConfigPaths.IsContainedIn(claudeRootFull, targetFull);
+    }
 
-            try {
-                if ( ! Directory.EnumerateFileSystemEntries(dir).Any() ) {
-                    Directory.Delete(dir);
-                    _log.Write($"AI config: pruned empty dir {relDir}");
+    // ─── Phase 2: Wipe managed roots ─────────────────────────────────────────
+
+    private void WipeManagedRoots( AiConfigManifest manifest, string claudeRootFull ) {
+        _activity.Log("ai_config_apply", $"Wipe: clearing {manifest.ManagedRoots!.Length} managed root(s)");
+
+        foreach ( var root in manifest.ManagedRoots ) {
+            var rootNormalized = root.TrimEnd('/', '\\');
+            var rootFull = Path.GetFullPath(Path.Combine(AiConfigPaths.ClaudeRoot, rootNormalized));
+
+            // Guard: containment already verified in pre-flight, but double-check before I/O
+            if ( ! IsContainedInClaudeRoot(claudeRootFull, rootFull) ) {
+                throw new InvalidOperationException($"Wipe target '{root}' resolves outside ~/.claude/ — aborting.");
+            }
+
+            if ( File.Exists(rootFull) ) {
+                // Single-file managed root
+                File.Delete(rootFull);
+                _log.Write($"AI config wipe: deleted file {rootNormalized}");
+            } else if ( Directory.Exists(rootFull) ) {
+                // Directory managed root — delete contents recursively, keep the directory itself
+                foreach ( var entry in Directory.EnumerateFileSystemEntries(rootFull, "*", SearchOption.TopDirectoryOnly) ) {
+                    var entryFull = Path.GetFullPath(entry);
+                    if ( ! AiConfigPaths.IsContainedIn(rootFull, entryFull) ) {
+                        throw new InvalidOperationException($"Wipe enumeration: entry '{entryFull}' resolved outside managed root — aborting.");
+                    }
+
+                    if ( Directory.Exists(entryFull) ) {
+                        Directory.Delete(entryFull, recursive: true);
+                    } else {
+                        File.Delete(entryFull);
+                    }
                 }
-            } catch ( Exception ex ) {
-                _log.Error($"AI config: failed to prune dir {relDir}", ex);
+                _log.Write($"AI config wipe: cleared directory {rootNormalized}/");
+            }
+            // If neither exists, skip — idempotent
+        }
+
+        _activity.Log("ai_config_apply", "Wipe: complete");
+    }
+
+    // ─── Phase 3: Download and write to temp ─────────────────────────────────
+
+    private async Task DownloadAndWrite( AiConfigManifest manifest, string tempDir, string claudeRootFull ) {
+        _activity.Log("ai_config_apply", $"Download: fetching {manifest.Files.Count} file(s)");
+
+        foreach ( var f in manifest.Files ) {
+            var osRelPath = f.Path.Replace('/', Path.DirectorySeparatorChar);
+            var destPath = Path.GetFullPath(Path.Combine(tempDir, osRelPath));
+
+            // Verify temp write target is under tempDir (path containment)
+            var tempDirFull = Path.GetFullPath(tempDir);
+            if ( ! AiConfigPaths.IsContainedIn(tempDirFull, destPath) ) {
+                throw new InvalidOperationException($"Download: '{f.Path}' resolves outside temp dir — aborting.");
+            }
+
+            var parentDir = Path.GetDirectoryName(destPath);
+            if ( parentDir != null ) Directory.CreateDirectory(parentDir);
+
+            using var fileStream = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            var downloadResult = await _api.DownloadAiConfigFile(f.Path, fileStream);
+            if ( ! downloadResult.Success ) {
+                _activity.Log("ai_config_apply", $"Download: ABORT — {f.Path}: {downloadResult.Message}", "error");
+                _log.Error($"AI config download failed for {f.Path}: {downloadResult.Message}");
+                throw new InvalidOperationException($"Download failed for {f.Path}: {downloadResult.Message}");
             }
         }
+
+        _activity.Log("ai_config_apply", "Download: all files fetched");
+
+        // SHA-256 verify — corruption check on the download
+        foreach ( var f in manifest.Files ) {
+            var osRelPath = f.Path.Replace('/', Path.DirectorySeparatorChar);
+            var filePath = Path.Combine(tempDir, osRelPath);
+            var actualSha = ComputeSha256(filePath);
+            if ( actualSha != f.Sha ) {
+                _activity.Log("ai_config_apply", $"Verify: ABORT — SHA mismatch for {f.Path}", "error");
+                _log.Error($"AI config SHA mismatch: {f.Path} expected={f.Sha} actual={actualSha}");
+                throw new InvalidOperationException($"SHA mismatch for {f.Path} — download may be corrupted");
+            }
+        }
+
+        _activity.Log("ai_config_apply", "Verify: all SHAs match");
     }
+
+    // ─── Phase 3 (continued): Move files to final location ───────────────────
+
+    private void MoveFilesToFinalLocation( AiConfigManifest manifest, string tempDir, string claudeRootFull ) {
+        _activity.Log("ai_config_apply", $"Write: placing {manifest.Files.Count} file(s)");
+
+        foreach ( var f in manifest.Files ) {
+            var osRelPath = f.Path.Replace('/', Path.DirectorySeparatorChar);
+            var srcPath = Path.Combine(tempDir, osRelPath);
+            var targetFull = Path.GetFullPath(Path.Combine(AiConfigPaths.ClaudeRoot, osRelPath));
+
+            // Final containment check before I/O
+            if ( ! AiConfigPaths.IsContainedIn(claudeRootFull, targetFull) ) {
+                throw new InvalidOperationException($"Write: '{f.Path}' resolves outside ~/.claude/ — aborting.");
+            }
+
+            var parentDir = Path.GetDirectoryName(targetFull);
+            if ( parentDir != null ) Directory.CreateDirectory(parentDir);
+
+            File.Move(srcPath, targetFull, overwrite: true);
+        }
+
+        _activity.Log("ai_config_apply", "Write: complete");
+    }
+
+    // ─── Phase 4: Finalize ────────────────────────────────────────────────────
+
+    private void Finalize( AiConfigManifest manifest ) {
+        var fingerprint = ManifestFingerprint.Compute(manifest);
+        var markerDir = Path.GetDirectoryName(AiConfigPaths.FingerprintPath);
+        if ( markerDir != null ) Directory.CreateDirectory(markerDir);
+        File.WriteAllText(AiConfigPaths.FingerprintPath, fingerprint);
+        _activity.Log("ai_config_apply", $"Applied version {manifest.Version} — {manifest.Files.Count} file(s) in {manifest.ManagedRoots!.Length} managed root(s)");
+    }
+
+    // ─── Helpers ──────────────────────────────────────────────────────────────
 
     private static string ComputeSha256( string filePath ) {
         using var sha = SHA256.Create();
         using var stream = File.OpenRead(filePath);
         var hash = sha.ComputeHash(stream);
         return Convert.ToHexString(hash).ToLowerInvariant();
-    }
-
-    private static void DeleteTmpFiles( IEnumerable<string> paths ) {
-        foreach ( var path in paths ) {
-            try {
-                if ( File.Exists(path) ) File.Delete(path);
-            } catch {
-                // Best-effort
-            }
-        }
-    }
-
-    private static void CleanupRollbackTmpFiles() {
-        if ( ! Directory.Exists(AiConfigPaths.ClaudeRoot) ) return;
-
-        try {
-            var rollbackTmps = Directory.GetFiles(AiConfigPaths.ClaudeRoot, "*.rollback.tmp", SearchOption.AllDirectories);
-            foreach ( var f in rollbackTmps ) {
-                try { File.Delete(f); } catch { }
-            }
-        } catch {
-            // Best-effort
-        }
     }
 }
