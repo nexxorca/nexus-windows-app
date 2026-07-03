@@ -16,6 +16,7 @@ public partial class SettingsWindow : Window {
 
         txtInterval.Text = config.SyncIntervalSeconds.ToString();
         chkLaunchOnStartup.IsChecked = config.LaunchOnStartup;
+        chkAiSyncEnabled.IsChecked = config.AiSyncEnabled;
         lblVersion.Text = "v" + (System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?");
     }
 
@@ -28,8 +29,11 @@ public partial class SettingsWindow : Window {
         StartupManager.SetLaunchOnStartup(launchOnStartup);
         _config.LaunchOnStartup = launchOnStartup;
 
+        var aiSyncEnabled = chkAiSyncEnabled.IsChecked == true;
+        _config.AiSyncEnabled = aiSyncEnabled;
+
         _config.Save();
-        _activity.Log("config_change", $"Settings updated: interval={_config.SyncIntervalSeconds}s, launchOnStartup={launchOnStartup}");
+        _activity.Log("config_change", $"Settings updated: interval={_config.SyncIntervalSeconds}s, launchOnStartup={launchOnStartup}, aiSyncEnabled={aiSyncEnabled}");
         Close();
     }
 
