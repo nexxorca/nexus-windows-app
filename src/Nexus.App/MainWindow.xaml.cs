@@ -35,8 +35,9 @@ public partial class MainWindow : Window {
     public void AllowClose() => _allowClose = true;
 
     public void RefreshState() {
-        lblUserName.Text = string.IsNullOrEmpty(_config.UserName) ? "—" : _config.UserName;
-        lblVersion.Text  = "v" + (Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?");
+        lblUserName.Text        = string.IsNullOrEmpty(_config.UserName) ? "—" : _config.UserName;
+        lblVersion.Text         = "v" + (Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?");
+        lblAiConfigVersion.Text = _app.LastAiConfigVersion ?? "—";
 
         if ( _syncEngine.IsRunning ) {
             lblStatus.Text   = "Syncing...";

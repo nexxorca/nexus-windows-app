@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.0] - 2026-07-03
+
+### Added
+- "AI Config:" status line on the main panel, directly below "Version:" — shows the last-fetched AI Config manifest version. Held in memory only (no persistence); populates within seconds of every launch since the AI Config check already runs on startup and after login. Shows `—` before the first check completes.
+
 ## [1.2.10] - 2026-07-03
 
 ### Changed
