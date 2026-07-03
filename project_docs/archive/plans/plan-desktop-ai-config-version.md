@@ -1,6 +1,6 @@
 <!-- plan-desktop-ai-config-version.md | nexus-windows-app/project_docs/plans/plan-desktop-ai-config-version.md -->
 
-> Author: Erik | Agent: tech-lead | Created: 2026-07-03 | Status: In Progress
+> Author: Erik | Agent: tech-lead | Created: 2026-07-03 | Status: Done — shipped in 1.3.0 (2026-07-03), merged via PR #6
 
 # Desktop "AI Config" Version Line — Implementation Plan
 

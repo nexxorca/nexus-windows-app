@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.1] - 2026-07-03
+
+### Changed
+- Archived the completed AI Config version-line plan to `project_docs/archive/plans/` (documentation only, no code change).
+
 ## [1.3.0] - 2026-07-03
 
 ### Added
