@@ -183,7 +183,7 @@ Closes: LOW #46 (doc lag).
 | 9.1 | Rewrite `project_docs/structure.md` AI Config Sync section to match wipe-and-replace. Remove all references to backups/rollback/perfect-fit/exclusion list. Add a **Policy banner** at the top of the section: "Files under server-managed roots are overwritten on every apply. Do not edit them — your changes will be lost. Place personal work under `~/.claude/projects/` or outside the managed roots." | doc-writer | MODIFY | `project_docs/structure.md` | Done |
 | 9.2 | Add `CHANGELOG.md` entry for 1.2.2. Group: `Changed` (wipe-and-replace apply, manifest schema gains `managed_roots`), `Security` (path containment, symlink rejection, Claude-running probe, HTTPS enforcement), `Tests` (new test files), `Removed` (backup ladder, rollback, perfect-fit delete, exclusion list, version marker). | doc-writer | MODIFY | `CHANGELOG.md` | Done |
 | 9.3 | Bump `Nexus.App.csproj` `<Version>` 1.2.1 → 1.2.2. | dev | MODIFY | `src/Nexus.App/Nexus.App.csproj` | Done |
-| 9.4 | Manual: run `cd /c/xampp/htdocs/nexus-windows-app && bash release.sh 1.2.2` from a standalone Git Bash (not VSCode terminal). | manual | RUN | — | TODO |
+| 9.4 | Manual: run `cd /c/xampp/htdocs/nexus-windows-app && bash release.sh 1.2.2` from a standalone Git Bash (not VSCode terminal). | manual | RUN | — | Done |
 
 ### Step 10 (final — always last): Close-out
 

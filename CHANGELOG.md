@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.2.10] - 2026-07-03
+
+### Changed
+- Documentation reconciliation, no functional code changes. AI Config Sync assessment updated to reflect the shipped wipe-and-replace rewrite (30 findings resolved, CRITICAL cleared); completed Main Window plan archived; hardening plan release step closed. First commit to capture the 1.2.8/1.2.9 work that was released without being committed.
+
+## [1.2.9] - 2026-06-09
+
+### Fixed
+- Login and 4-hour-timer paths now `await TriggerUpdateCheck()` before calling `TriggerAiConfigCheck()`, eliminating the double-dialog race where AI Config's fast JSON fetch finished before Velopack's nupkg download, causing both prompts to appear simultaneously.
+- `_pendingVelopackUpdate` is now set as soon as `CheckForUpdatesAsync()` returns a non-null result — before `DownloadUpdatesAsync()` begins — so any concurrent manual AI Config trigger observes the flag immediately and defers correctly. The flag is also cleared in the catch block so a failed download does not block AI Config for the rest of the session.
+
+## [1.2.8] - 2026-06-09
+
+### Added
+- "Enable AI Config Sync" checkbox in Settings — when unchecked, all triggers (login, 4-hour timer, manual button) short-circuit; auto-triggers log silently, manual trigger shows an informational dialog. Default: enabled (existing installs unchanged on upgrade).
+
 ## [1.2.5] - 2026-06-08
 
 ### Added

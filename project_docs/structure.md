@@ -1,6 +1,6 @@
 # Nexus Windows App - Structure
 
-> Last updated: 2026-06-08 (1.2.5 backup+SHA) | Project: `nexus-windows-app`
+> Last updated: 2026-06-09 (1.2.9 Velopack/AI-Config race fix) | Project: `nexus-windows-app`
 
 ## Purpose
 Native WPF tray application that synchronizes Claude Code session transcripts from `~/.claude/projects/` to the Nexus server via API, with Velopack auto-update support.
@@ -124,7 +124,7 @@ src/Nexus.App/
 - On startup (if logged in) + after login + every 4 hours via `DispatcherTimer`
 - Velopack `UpdateManager` fetches `{baseUrl}/api/v1/app/releases` → `releases.win.json`
 - AI Config Sync triggers on: login (after Velopack) + manual "Check AI Config" button + 4h timer (piggy-backs Velopack timer); uses `TriggerAiConfigCheck()` shared entry point with popup-stacking guard
-- **Velopack takes precedence**: when a Velopack update is downloaded and the user is prompted to restart, `_pendingVelopackUpdate` is set on `App`. `TriggerAiConfigCheck` returns immediately — silently for auto-triggers, with an informational `MessageBox` for manual triggers. The field is cleared if the user declines the restart; if they accept, the app restarts and the next launch's normal startup sequence fires AI sync naturally.
+- **Velopack takes precedence**: `_pendingVelopackUpdate` is set on `App` as soon as `CheckForUpdatesAsync()` returns a non-null result — before the nupkg download begins — so concurrent AI Config triggers observe it immediately. `TriggerAiConfigCheck` returns immediately when the flag is set — silently for auto-triggers, with an informational `MessageBox` for manual triggers. The field is cleared if the download fails or if the user declines the restart; if they accept, the app restarts and the next launch's normal startup sequence fires AI sync naturally. The login and 4-hour-timer paths `await TriggerUpdateCheck()` before calling `TriggerAiConfigCheck()`, so the sequencing is guaranteed even without the flag.
 
 ---
 

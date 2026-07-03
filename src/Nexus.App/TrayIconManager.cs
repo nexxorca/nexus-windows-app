@@ -109,7 +109,7 @@ public class TrayIconManager : IDisposable {
         menu.Items.Add(settings);
 
         var checkUpdates = new MenuItem { Header = "Check for Updates" };
-        checkUpdates.Click += ( s, e ) => _app.TriggerUpdateCheck();
+        checkUpdates.Click += ( s, e ) => _ = _app.TriggerUpdateCheck();
         menu.Items.Add(checkUpdates);
 
         menu.Items.Add(new Separator());

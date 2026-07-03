@@ -74,7 +74,7 @@ public partial class App : Application {
         } else {
             _api.Configure(_config.NexusUrl, _config.DecryptedToken);
             _trayManager.StartSync();
-            TriggerUpdateCheck();
+            _ = TriggerUpdateCheck();
             StartUpdateTimer();
         }
     }
@@ -89,7 +89,7 @@ public partial class App : Application {
         _api.Configure(_config.NexusUrl, _config.DecryptedToken);
         _trayManager?.UpdateUserName(_config.UserName ?? "");
         _trayManager?.StartSync();
-        TriggerUpdateCheck();
+        await TriggerUpdateCheck();
         StartUpdateTimer();
         await TriggerAiConfigCheck(isManualTrigger: false);
     }
@@ -97,24 +97,25 @@ public partial class App : Application {
     private void StartUpdateTimer() {
         if ( _updateTimer != null ) return;
         _updateTimer = new DispatcherTimer { Interval = TimeSpan.FromHours(4) };
-        _updateTimer.Tick += (_, _) => {
-            TriggerUpdateCheck();
-            _ = TriggerAiConfigCheck(isManualTrigger: false);  // fire-and-forget; UI thread (Tick fires on dispatcher)
+        _updateTimer.Tick += async (_, _) => {
+            await TriggerUpdateCheck();
+            await TriggerAiConfigCheck(isManualTrigger: false);
         };
         _updateTimer.Start();
     }
 
-    public void TriggerUpdateCheck() {
-        _ = Task.Run(async () => {
+    public Task TriggerUpdateCheck() {
+        return Task.Run(async () => {
             try {
                 var manager = new UpdateManager(_config.NexusUrl + "/api/v1/app/releases");
                 var updateInfo = await manager.CheckForUpdatesAsync();
                 if ( updateInfo is null ) return;
 
+                Dispatcher.Invoke(() => _pendingVelopackUpdate = updateInfo);
+
                 await manager.DownloadUpdatesAsync(updateInfo);
 
                 Dispatcher.Invoke(() => {
-                    _pendingVelopackUpdate = updateInfo;
                     var newVersion = updateInfo.TargetFullRelease.Version.ToString();
                     var result = MessageBox.Show(
                         $"Version {newVersion} is available. Restart now to update?",
@@ -130,6 +131,7 @@ public partial class App : Application {
                 });
             } catch {
                 // Update failure must never crash the app
+                Dispatcher.Invoke(() => _pendingVelopackUpdate = null);
             }
         });
     }
@@ -138,6 +140,18 @@ public partial class App : Application {
     public async Task TriggerAiConfigCheck( bool isManualTrigger = false ) {
         if ( _aiConfigCheckInFlight ) return;
         if ( ! _config.IsLoggedIn ) return;
+        if ( ! _config.AiSyncEnabled ) {
+            if ( isManualTrigger ) {
+                MessageBox.Show(
+                    "AI Config Sync is disabled in Settings. Enable it via Settings to use this feature.",
+                    "AI Config Sync",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            } else {
+                _log.Write("TriggerAiConfigCheck: skipped — AI Config Sync is disabled in settings");
+            }
+            return;
+        }
         if ( _pendingVelopackUpdate is not null ) {
             if ( isManualTrigger ) {
                 MessageBox.Show(
