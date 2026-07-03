@@ -1,6 +1,6 @@
 # Nexus Windows App - Structure
 
-> Last updated: 2026-06-09 (1.2.9 Velopack/AI-Config race fix) | Project: `nexus-windows-app`
+> Last updated: 2026-07-03 (1.3.0 AI Config version line) | Project: `nexus-windows-app`
 
 ## Purpose
 Native WPF tray application that synchronizes Claude Code session transcripts from `~/.claude/projects/` to the Nexus server via API, with Velopack auto-update support.
@@ -101,7 +101,7 @@ src/Nexus.Sync/Services/
 
 ```
 src/Nexus.App/
-├── MainWindow.xaml                  # Tray-launched dashboard — singleton, hides on close; mirrors tray actions; subscribes to SyncEngine events; has btnCheckAiConfig button
+├── MainWindow.xaml                  # Tray-launched dashboard — singleton, hides on close; mirrors tray actions; subscribes to SyncEngine events; has btnCheckAiConfig button; state panel shows app version + last-fetched AI Config manifest version (lblAiConfigVersion)
 ├── LoginWindow.xaml                 # Nexus URL, email, password — emits LoginSucceeded event
 ├── SettingsWindow.xaml              # Sync interval config, launch-on-startup toggle, version display (bottom-left)
 ├── ActivityLogWindow.xaml           # Recent activity (200 entries), filter by type, timestamp/type/description/status columns
@@ -112,7 +112,7 @@ src/Nexus.App/
 
 ```
 src/Nexus.App/
-├── App.xaml.cs                      # Single-instance (Mutex), wires services, manages tray + sync + update timers; TriggerAiConfigCheck(isManualTrigger) + login hook + 4h piggy-back; orphan .tmp cleanup on startup
+├── App.xaml.cs                      # Single-instance (Mutex), wires services, manages tray + sync + update timers; TriggerAiConfigCheck(isManualTrigger) + login hook + 4h piggy-back; orphan .tmp cleanup on startup; exposes in-memory LastAiConfigVersion (set on each successful manifest fetch, read by MainWindow)
 ├── TrayIconManager.cs               # System tray icon, context menu, sync timer, tooltip updates
 └── StartupManager.cs                # Static helper — registers/unregisters app in HKCU\...\Run for Windows startup
 ```

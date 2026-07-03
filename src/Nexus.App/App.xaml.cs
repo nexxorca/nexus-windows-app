@@ -26,6 +26,8 @@ public partial class App : Application {
     private UpdateInfo? _pendingVelopackUpdate;
     private MainWindow? _mainWindow;
 
+    public string? LastAiConfigVersion { get; private set; }
+
     [STAThread]
     public static void Main( string[] args ) {
         VelopackApp.Build().Run();
@@ -191,6 +193,8 @@ public partial class App : Application {
                     return;
                 }
                 var manifest = result.Data!;
+                LastAiConfigVersion = manifest.Version;
+                _mainWindow?.RefreshState();
                 var currentFingerprint = File.Exists(AiConfigPaths.FingerprintPath)
                     ? File.ReadAllText(AiConfigPaths.FingerprintPath).Trim()
                     : "";

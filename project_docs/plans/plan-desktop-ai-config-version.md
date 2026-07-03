@@ -1,6 +1,6 @@
 <!-- plan-desktop-ai-config-version.md | nexus-windows-app/project_docs/plans/plan-desktop-ai-config-version.md -->
 
-> Author: Erik | Agent: tech-lead | Created: 2026-07-03 | Status: Proposed
+> Author: Erik | Agent: tech-lead | Created: 2026-07-03 | Status: In Progress
 
 # Desktop "AI Config" Version Line — Implementation Plan
 
@@ -14,7 +14,7 @@ Keep it in memory. Hold the last-fetched version on `App`, set it whenever a man
 
 ## Precondition
 
-The working tree carries uncommitted 1.2.8/1.2.9 work and the last commit is 1.2.5. Commit/push that first so this change lands on a clean baseline — do not start until the tree is clean.
+Satisfied as of 2026-07-03: the 1.2.8/1.2.9 work was committed and pushed as 1.2.10 (PR #5); the working tree is clean and `HEAD` matches `origin/dev`. This change lands on a clean baseline.
 
 ## Steps
 
@@ -22,26 +22,26 @@ The working tree carries uncommitted 1.2.8/1.2.9 work and the last commit is 1.2
 
 | # | Description | Agent | Action | Files | Status |
 |---|-------------|-------|--------|-------|--------|
-| 1.1 | Add an in-memory `LastAiConfigVersion` (nullable string) property on `App`, readable by `MainWindow`. In `TriggerAiConfigCheck`, right after the successful fetch (`var manifest = result.Data!`, [App.xaml.cs:193](src/Nexus.App/App.xaml.cs#L193)), set it to `manifest.Version` and call `_mainWindow?.RefreshState()`. One insertion point covers every success path (up-to-date, declined, applied). | dev | MODIFY | `src/Nexus.App/App.xaml.cs` | TODO |
+| 1.1 | Add an in-memory `LastAiConfigVersion` (nullable string) property on `App`, readable by `MainWindow`. In `TriggerAiConfigCheck`, right after the successful fetch (`var manifest = result.Data!`, [App.xaml.cs:193](src/Nexus.App/App.xaml.cs#L193)), set it to `manifest.Version` and call `_mainWindow?.RefreshState()`. One insertion point covers every success path (up-to-date, declined, applied). | dev | MODIFY | `src/Nexus.App/App.xaml.cs` | Done |
 
 ### Step 2: Display the line
 
 | # | Description | Agent | Action | Files | Status |
 |---|-------------|-------|--------|-------|--------|
-| 2.1 | Add a state-panel row under the "Version:" row (new `RowDefinition`; mirror the label + value styling at [MainWindow.xaml:41-42](src/Nexus.App/MainWindow.xaml#L41-L42)). Label reads "AI Config:". | dev | MODIFY | `src/Nexus.App/MainWindow.xaml` | TODO |
-| 2.2 | In `RefreshState()`, set the new value TextBlock from `_app.LastAiConfigVersion`, with a `—` fallback when null. Mirror the `lblVersion` assignment at [MainWindow.xaml.cs:39](src/Nexus.App/MainWindow.xaml.cs#L39). | dev | MODIFY | `src/Nexus.App/MainWindow.xaml.cs` | TODO |
+| 2.1 | Add a state-panel row under the "Version:" row (new `RowDefinition`; mirror the label + value styling at [MainWindow.xaml:41-42](src/Nexus.App/MainWindow.xaml#L41-L42)). Label reads "AI Config:". | dev | MODIFY | `src/Nexus.App/MainWindow.xaml` | Done |
+| 2.2 | In `RefreshState()`, set the new value TextBlock from `_app.LastAiConfigVersion`, with a `—` fallback when null. Mirror the `lblVersion` assignment at [MainWindow.xaml.cs:39](src/Nexus.App/MainWindow.xaml.cs#L39). | dev | MODIFY | `src/Nexus.App/MainWindow.xaml.cs` | Done |
 
 ### Step 3: Version + changelog
 
 | # | Description | Agent | Action | Files | Status |
 |---|-------------|-------|--------|-------|--------|
-| 3.1 | Bump `<Version>` 1.2.9 → 1.3.0 (new user-facing feature) and add a CHANGELOG `Added` entry. | dev | MODIFY | `src/Nexus.App/Nexus.App.csproj`, `CHANGELOG.md` | TODO |
+| 3.1 | Bump `<Version>` 1.2.10 → 1.3.0 (new user-facing feature) and add a CHANGELOG `Added` entry. | dev | MODIFY | `src/Nexus.App/Nexus.App.csproj`, `CHANGELOG.md` | Done |
 
 ### Step 4 (final — always last): Close-out
 
 | # | Description | Agent | Action | Files | Status |
 |---|-------------|-------|--------|-------|--------|
-| 4.1 | Propose close-out checklist (chat only). | tech-lead | RUN | — | TODO |
+| 4.1 | Propose close-out checklist (chat only). | tech-lead | RUN | — | Done |
 
 ---
 
