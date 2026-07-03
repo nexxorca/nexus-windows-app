@@ -17,7 +17,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Resources\nexus.ico</ApplicationIcon>
-    <Version>1.3.0</Version>
+    <Version>1.3.1</Version>
     <StartupObject>Nexus.App.App</StartupObject>
   </PropertyGroup>
 
